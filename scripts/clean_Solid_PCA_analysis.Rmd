@@ -1,0 +1,471 @@
+---
+title: "Clean_solid_PCA_analysis"
+output: html_notebook
+---
+
+```{r, Chunk 1, warning =FALSE, message =FALSE}
+#### Chunk 1 : Load packages####
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(magrittr)
+library(dplyr)
+library(ggpubr)
+library(rstatix)
+library(purrr)
+library(ggrepel)
+
+```
+
+
+```{r}
+####Chunk 2: Import and export info####
+
+#Input files
+info<-read.csv("../Data/Solid_PCA/plate_info.csv")
+partners<-read.csv("../Data/Solid_PCA/quadrant_partners.csv")
+strain_legend<-"../Data/Solid_PCA/legend_strains_for_array.xlsx"
+preselection_folder<-"../Data/Solid_PCA/S2_pyphe_quant/"
+postselection_folder<-"../Data/Solid_PCA/colony_sizes/"
+# dms_results_file<-"../Data/DMS/aa_preliminary_scan_DMS_scores.csv"
+validation_file<-"../Data/DMS/aa_validation_scores.csv"
+
+#Output_files
+output_file <- "../Data/Solid_PCA/solid_pca_results.csv"
+uncombined_output_file<-"../Data/Solid_PCA/uncombined_solid_pca_results.csv"
+
+
+
+
+```
+
+
+```{r}
+
+####Chunk 3: Import colony sizes####
+
+#Import each of the plates final timepoints and combine into one dataframe
+
+df<-data.frame(row=rep(1:32, each=48), column=rep(1:48, times=32))
+for(i in 1:nrow(info)){
+  if (i %% 5 == 0) {print(i)}
+  file<-paste0(postselection_folder,info[i, "file"])
+  r<- read.csv(file, check.names = F) %>% 
+    dplyr::rename(timepoint = 1) %>%
+    pivot_longer(cols = -timepoint, names_to = "position", values_to = paste(i)) %>%
+               separate(col=position, into = c("row", "column"), sep="-", convert=T) %>% 
+               filter(timepoint==48) %>%                                                  #Only take final timepoint
+               dplyr::select(-timepoint) 
+                
+  df<-left_join(df, r, by=c("row", "column"))
+}
+
+#Transfer to long format
+df <- pivot_longer(df, cols = -c(row, column), names_to = "plate", values_to = "area", names_transform = list(plate= as.integer))
+
+#Add the information to each mutant which is contained in csv files 
+df<- left_join(df, info, by="plate")
+df<-left_join(df, partners, by=c("column", "row", "target")) %>%
+  dplyr::rename(partner = Gene)
+
+#Only keep the appropriate strain for each colony
+df <- df %>%
+  mutate(mutant = case_when( q == "A" ~ qA.strain,
+                             q == "B" ~ qB.strain,
+                             q == "C" ~ qC.strain,
+                             q == "D" ~ qD.strain)) %>%
+  dplyr::select(-c(qA.strain, qB.strain, qC.strain, qD.strain, original_column, original_row))
+
+#Import information about which strain is which precise mutation
+mutant_def<-readxl::read_xlsx(strain_legend, col_names = c("mutant", "mutation")) %>% 
+  mutate(mutant = str_remove_all(mutant, pattern = "DJ_"))
+
+
+#Add mutant information to dataframe
+df <- left_join(df, mutant_def, by="mutant")
+
+
+rm(mutant_def, r, i, file)
+```
+
+
+```{r}
+
+####Chunk 4: Import mated colony sizes####
+
+#Now import the information about the colonies before selection, to remove any colonies which were not present before selection, but appear afterwards, as these may be contamination
+
+#Import the 
+pre_sel<-data.frame()
+for(i in 1:nrow(info)){
+  if (i %% 5 == 0) {print(i)}
+ file<- paste0(preselection_folder, info[i, "pre_selection_file"])
+r<-read.csv(file, check.names = F) %>%
+  dplyr::select(c(area, row, column)) %>%
+  mutate(plate = i, condition = info[i, "Condition"])
+
+pre_sel<- rbind(pre_sel, r)
+}
+
+#The positions missing from this S2 dataframe should not be in the MTX (final) dataframe, if they are present that is a mistake. I can therefore take the missing rows from S2 out of final
+
+#This identifies the positions and plates
+not_in_presel<-setdiff(dplyr::select(df, c(row, column, plate)), dplyr::select(pre_sel, c(row, column, plate)))
+#This pulls out the appropriate rows in the df
+not_in_presel<-semi_join(df, not_in_presel, by=c("plate", "row", "column"))
+#Remove the borders (which will be taken out anyways) and those that are NA (if colony didn't grow at pre_selection, then should Na after selection, so no need to take into account)
+not_in_presel<-filter(not_in_presel, row %in% 2:31 & column %in% 2:47 & !is.na(area))
+
+
+
+#Only two colonies are not NA (which are going to be removed anyways), or in the border (which I don't want to remove so that I can do normalization). I manually checked the pictures for these two colonies, and they seem to be mistakes. I will remove them manually
+
+df[df$plate == 19 & df$row == 28 & df$column == 33, "area"] <- NA
+df[df$plate == 10 & df$row == 9 & df$column == 26, "area"] <- NA
+
+
+rm(pre_sel, r, not_in_presel, i, file)
+
+```
+
+
+```{r}
+
+####Chunk 5: Normalize colony sizes####
+
+#Now normalize the colony sizes to the background. This part is based on Ugo's script, available on GitHub https://github.com/Landrylab/DionneEtal2020/blob/master/FirstPCAScreen_DionneEtal2020.R
+
+
+
+# Log2 transformation of colony size and remove positions with no growth in the DHFR-PCA selection.
+df %<>% mutate(adjusted_area = area+1)
+df %<>% mutate(log2 = log2(adjusted_area))
+df <- subset(df, df$log2 > 2) 
+
+#distribution before normalization to plate background
+# ggplot(df, aes(x=log2, colour=condition, group=plate))+
+#   geom_density()+
+#   theme_bw()+
+#   ggtitle("Distribution before normalization")
+# 
+# #Is there a bias introduced by the position in the array?
+# df%>%
+#   ggplot(aes(x=log2, y=as.factor(plate), colour=condition))+
+#   geom_boxplot()+
+#   labs("is there bias from plate")
+# 
+# df%>%
+#   ggplot(aes(x=as.factor(column), y=log2, colour=condition))+
+#   geom_boxplot()+
+#   facet_wrap(~plate)+
+#   labs("Is there bias from position in column")
+# 
+# df%>%
+#   ggplot(aes(x=log2, y=as.factor(row), colour=condition))+
+#   geom_boxplot()+
+#   facet_wrap(~plate)+
+#   labs("Is there bias from position in row")
+
+#Normalize by row
+df%<>%
+  filter(partner!="blank")%>%
+  group_by(plate, row)%>%
+  summarize(row_med=median(log2, na.rm=T))%>%
+  ungroup()%>%
+  right_join(., df, by=c("plate", "row"))%>%
+  mutate(row_norm=log2-row_med)
+
+#Normalize by column
+df%<>%
+  filter(partner!="blank")%>%
+  group_by(plate, column)%>%
+  summarize(col_med=median(row_norm, na.rm=T))%>%
+  ungroup()%>%
+  right_join(., df, by=c("plate", "column"))%>%
+  mutate(col_norm=row_norm-col_med)
+
+# Normalize the colony size to plate background
+df %<>% 
+  group_by(plate) %>%
+  mutate(platemed = median(col_norm, na.rm=T)) %>%
+  ungroup()
+df%<>% mutate(mednorm=col_norm-platemed)
+
+
+#Check that normalization worked
+
+ggplot(df, aes(x=mednorm, colour=condition, group=plate))+
+  geom_density()+
+  theme_bw()+
+  ggtitle("Normalized PCA scores")
+
+ggplot(df,aes(x=mednorm, y=as.factor(plate), colour=condition))+
+  geom_boxplot()+
+  theme_bw()+
+  ggtitle("Normalized PCA score by plate")
+
+
+#Is there still a bias introduced by the position in the array?
+# df%>%
+#   ggplot(aes(x=mednorm, y=as.factor(plate), colour=condition))+
+#   geom_boxplot()+
+#   labs("is there bias from plate")
+# 
+# df%>%
+#   ggplot(aes(x=as.factor(column), y=mednorm, colour=condition))+
+#   geom_boxplot()+
+#   facet_wrap(~plate)+
+#   labs("Is there bias from position in column")
+# 
+# df%>%
+#   ggplot(aes(x=mednorm, y=as.factor(row), colour=condition))+
+#   geom_boxplot()+
+#   facet_wrap(~plate)+
+#   labs("Is there bias from position in row")
+```
+
+```{r, Chunk 6: combine replicates}
+
+####Combine together the replicates scattered across the plates####
+
+#Remove border colonies
+df%<>%filter(partner!="border")%>%
+  mutate(partner = str_remove_all(partner, "_DHFR\\[12\\]"))%>% #Remove redundant DHFR[12] ending
+  mutate(type = case_when(str_detect(partner, "SHO1_") ~ "Swapped",  #Indicate if each partner is an SH3 containing
+                               TRUE  ~ "SH3_proteins")) %>%                   #or a SH3 swapped into Sho1
+        filter(type == "SH3_proteins")
+
+#Rescale values between 0 and 1
+df<-df%>%
+  mutate(mednorm=(mednorm-min(df$mednorm))/(max(df$mednorm)-min(df$mednorm))) 
+
+#Save a copy of the data frame before combining replicates
+uncomb_df<-df
+
+
+
+#combine replicates together
+df %<>%
+  group_by(mutation, partner, condition, plate, target) %>%
+  summarise(replicates=n(),
+            medarea=median(area),
+            medrep=median(mednorm),
+            sd=sd(mednorm))
+
+
+#Remove interactions that have less than 3 replicates
+df %<>% filter(replicates > 2)
+
+
+
+```
+
+
+
+```{r}
+####Chunk 7 : Visualize interaction scores####
+
+#Add back the value of the wildtype interaction as a separate column
+  df<-df %>%
+        filter(target == "Pbs2" & partner == "SHO1") %>%
+        mutate(wt_interaction = medrep) %>%
+        ungroup() %>%
+        dplyr::select(c(wt_interaction, condition, mutation, target)) %>%
+        right_join(., df, by=c("condition", "mutation", "target")) %>% #Add back value of WT interaction
+        mutate(wt_interaction = as.numeric(wt_interaction)) #change value to numeric
+        
+
+
+#Visualize interaction scores
+df %>%
+  filter(target=="Pbs2") %>%
+ggplot((aes(x=partner, y=mutation, fill=medrep)))+
+  geom_tile()+
+  scale_fill_viridis_c(option="plasma")+
+  facet_grid(rows=vars(condition))+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5, size=8))+
+  labs(y="Sho1 mutation",
+       x="Interaction partner",
+       fill="PCA score",
+       title = "Pbs2 mutant interactions")
+
+
+#Another way of visualizing interaction scores
+ggplot(filter(df, condition == "MTX" & target == "Pbs2"), aes(x=medrep))+
+  geom_histogram(aes(fill=mutation))+
+  facet_wrap(~mutation)+
+  guides(fill="none")+
+  scale_fill_viridis_d(option = "plasma")+
+  geom_vline(aes(xintercept=wt_interaction), linetype="dashed")+
+  theme_bw()+
+  scale_y_continuous(expand=c(0,0))+
+  labs(x="PCA scores",
+       title = "Distribution of PCA scores for Pbs2 mutants")
+
+
+
+  
+
+```
+
+```{r}
+
+####Chunk 8: Significance of interactions strength####
+
+#Keep only relevant info for t-test
+mtx_uncomb<-uncomb_df%>%
+  filter(condition == "MTX")%>%
+  select(partner, mutation, mednorm)
+
+sho1<-filter(mtx_uncomb, partner == "SHO1") #Isolate Sho1 to add back later as positive control
+
+
+mtx_uncomb<-mtx_uncomb%>% 
+  bind_rows(., sho1) #Add back Sho1 positive control
+
+rm(sho1)
+
+
+#For each SH3 containing mutant, calculate if one or more Pbs2 mutants interacts differently than WT Pbs2 
+t_test<-mtx_uncomb %>%
+  filter(!(partner== "BBC1" & mutation == "H86W"))%>% #Only one replicate, and it messes up the calculation of the t_test for all BBC1
+  group_by(partner)%>% #Look at each SH3 containing protein one at a time
+  rstatix::pairwise_t_test(mednorm ~ mutation, ref.group = "WT", # Does a mutant interact differently than WT?
+                           alternative="two.sided",   #Mutants that interact stronger or weaker
+                           p.adjust.method = "fdr",#Correction for multiple comparisons
+                           pool.sd = F, var.equal=F)%>% #Welch t-test, as variance may be unequal
+  rstatix::add_xy_position(scales = "free_y") #Info for plotting
+
+
+#Plot the interactions and significance
+mtx_uncomb %>%
+  ggplot(aes(x=mutation, y=mednorm))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(width = 0.25, aes(colour=mutation))+
+  #scale_y_continuous(limits = c(0, 1))+
+  facet_wrap(~partner)+
+  stat_pvalue_manual(t_test, hide.ns = T)+
+  theme(axis.text.x =  element_text(angle=90, hjust=1, vjust=0.5))+
+  guides(colour="none")+
+  labs(title="SH3 proteins")
+```
+
+
+```{r}
+
+####Chunk 9 : ####
+
+#Join t-test result to PCA scores
+df<-left_join(filter(df, condition == "MTX"),
+                rename(t_test, mutation=group2),
+                by=c("partner", "mutation"))
+
+#Isolate interactions by WT Pbs2
+wt_pbs2_values<-df%>%
+  filter(mutation=="WT")%>%
+  select(c(partner, medrep))%>%
+  rename(wt_medrep=medrep)
+
+#Calculate interaction change from WT Pbs2 with same SH3 protein
+df<-df%>%
+  left_join(., wt_pbs2_values, by="partner")%>%
+  mutate(log2FC_PCA_score=log2(medrep/wt_medrep))%>% #How much is each interaction different from WT Pbs2 with same protein
+  select(c(condition, mutation, partner, medrep, p.adj, p.adj.signif, log2FC_PCA_score))%>%
+  filter(partner != "SHO1" & partner != "NBP2")%>% #Will bind to these anyways
+  mutate(log10p=-log10(p.adj))%>% #For volcano plot later on
+  mutate(mutation_sig=case_when(p.adj.signif != "ns" ~ mutation, #Also for plots later on
+                              TRUE ~ NA_character_))
+
+#View interactions on volcano plot
+df%>%
+  ggplot(aes(x=log2FC_PCA_score, y=log10p))+
+  geom_vline(xintercept=0, linetype="dashed", colour="grey50")+
+  geom_point(aes(fill=mutation_sig, group=partner), shape=21, size=2)+
+  geom_hline(yintercept = -log10(0.05))+
+  scale_fill_brewer(palette = "Set1", na.value="black")+
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05)))+
+  scale_x_continuous(expand=expansion(mult=c(0.05, 0.05)))+
+  theme_classic()+
+  labs(fill="Mutation",
+       x="Log2FC interaction change vs WT Pbs2",
+       y="-log10(p-value)")
+
+
+
+
+```
+
+```{r}
+####CHUNK 10 : COMPARE TO AFFINITY #### 
+
+#Take only mutants changing specificity
+sig_specificity<-df%>%
+  filter(p.adj.signif != "ns")%>%
+  mutate(effect=if_else(log2FC_PCA_score >0, "Less specific", "More specific"))
+
+#Load affinity values
+validation_results<-read.csv(validation_file)%>%
+  filter(condition =="MTX" & interactor == "Sho1" & sorbitol == 1)%>%
+  rename(mutation=mutant)
+
+prelim_dms_results<-read.csv("../Data/DMS/aa_preliminary_scan_DMS_scores.csv")%>%
+  filter(condition == "MTX" & interactor == "Sho1" & sorbitol == 1)%>%
+  filter(position == 82 & aa == "W" | position == 83 & aa == "F")%>%
+  select(aa, interactor, type, median_log2FC)%>%
+  bind_cols(., data.frame(mutation=c("Q82W", "S83F")))
+  
+#Join specificity and affinty values
+sh3_protein_growthrate<-left_join(sig_specificity, validation_results, by="mutation")
+
+
+#include affinity values for Q82W and S83F 
+sh3_protein_growthrate[sh3_protein_growthrate$mutation == "Q82W","median_log2FC"]<-prelim_dms_results[prelim_dms_results$mutation == "Q82W", "median_log2FC"]
+sh3_protein_growthrate[sh3_protein_growthrate$mutation == "S83F","median_log2FC"]<-prelim_dms_results[prelim_dms_results$mutation == "S83F", "median_log2FC"]
+
+
+#Plot affinity against specificity
+sh3_protein_growthrate%>%
+  ggplot(aes(x=log2FC_PCA_score, y=median_log2FC))+
+  geom_vline(xintercept = 0, linetype="dashed", colour="grey50")+
+  geom_point(aes(group=interaction(mutation, partner), fill=mutation), shape=21, size=3)+
+  scale_fill_brewer(palette = "Set1")+
+  geom_text_repel(aes(label=partner))+
+  stat_cor(method="spearman", cor.coef.name = "rho", show.legend=F, label.y.npc = 0.95)+
+  annotate("text", label="Weaker\noff-target\ninteractions", x=-0.25, y=3.75)+
+  annotate("text", label="Stronger\noff-target\ninteractions", x=0.25, y=3.75)+
+  ylim(c(-2, 4))+
+  theme_classic()+
+  labs(y="Interaction score",
+       x="Log2FC interaction change vs WT Pbs2",
+       fill="Mutation")
+
+sh3_protein_growthrate%>%
+  group_by(mutation)%>%
+  summarise(median_log2FC=unique(median_log2FC))%>%
+  mutate(mutation_effect=case_when(mutation %in% c("I87W", "K85W", "N92H", "N92S", "S83F") ~ "Specificity Gain",
+                                   mutation %in% c("L98F", "P97A") ~ "Specificity Loss",
+                                   mutation %in% c("Q82W") ~ "Both",
+                                   TRUE ~ "ERROR"))%>%
+  ggplot(aes(x=mutation_effect, y=median_log2FC))+
+  geom_boxplot(aes(fill=mutation_effect), outlier.shape= NA)+
+  geom_jitter(shape=21, aes(fill=mutation_effect), width = 0.1, height = 0)+
+  scale_x_discrete(limits=c("Specificity Loss", "Both", "Specificity Gain"))+
+  scale_fill_manual(values=c("yellow","#4fb443", "#c70a1b"), guide="none")+
+  theme_bw()+
+  labs(x="Mutation effect on specificity",
+       y="Interaction score of mutation")
+  
+
+
+```
+
+```{r}
+
+####CHUNK 11 : EXPORT VALUES FOR MUTANTS ####
+
+write.csv(uncomb_df, uncombined_output_file, row.names = F)
+
+write.csv(df, output_file, row.names=F)
+
+```
+

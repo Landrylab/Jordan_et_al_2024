@@ -1,0 +1,681 @@
+---
+title: "Final DMS script"
+output: html_notebook
+---
+
+
+```{r, Chunk 1 : load packages}
+#### CHUNK 1 : Load packages ####
+
+library(tidyverse)
+library(magrittr)
+library(bioseq)
+library(ggpubr)
+library(rstatix)
+library(cowplot)
+library(GGally)
+
+
+```
+
+
+```{r, Chunk 2: Change parameters}
+
+#### CHUNK 2 : Set parameters ####
+
+####UNCOMMENT THE SCREEN TO ANALYZE
+# screen<-"preliminary"
+screen<-"motif_only"
+
+
+if (screen == "preliminary"){
+  ##Values for preliminary DMS
+  info<-read.csv("../Data/DMS/designs/prelim_scan_design.csv")
+  
+  codon_output_file<-"../Data/DMS/results/codon_preliminary_scan_DMS_scores.csv"
+  aa_output_file<-"../Data/DMS/results/aa_preliminary_scan_DMS_scores.csv"
+  summary_output_file<-"../Data/DMS/results/preliminary_scan_significance_summary.csv"
+  } else if(screen == "motif_only"){
+  ##Values for second DMS library
+  info<-read.csv("../Data/DMS/designs/DMS_design.csv")  
+  
+  codon_output_file<-"../Data/DMS/results/codon_DMS_scores.csv"
+  aa_output_file<-"../Data/DMS/results/aa_DMS_scores.csv"
+  summary_output_file<-"../Data/DMS/results/significance_summary.csv"
+  }
+
+
+info<- info %>% 
+   filter(target == "Pbs2")
+
+#Files with the wt codon sequence and aa sequence
+pbs2_wt_seq<-read.csv("../Data/DMS/reference/Pbs2_wt_seq.csv")%>%
+  mutate(position=position+70)
+
+
+```
+
+
+```{r}
+#### CHUNK 3 : Import variant counts ####
+
+#This chunk imports all the reads per mutant from all the libraries, and combines into one dataframe 
+
+df<-data.frame()
+for(i in 1:nrow(info)){
+  
+  current_file<-info[i, "file"]
+  
+  if(screen == "preliminary"){
+    current_df<-read.csv(current_file, col.names = c("codon", 1:56), header=F, skip = 1, check.names = F)
+    colnames(current_df)<-c("codon", 71:126)
+  } else if (screen == "motif_only"){
+    if (info[i, "sequencing_run"]==1){
+      current_df<-read.csv(current_file) %>%
+        select(X, X15:X30)#only select codons in the mutated portion
+      colnames(current_df)<-c("codon", 85:100) #adjusts the numbering of positions
+    }else if (info[i, "sequencing_run"]==2){
+      current_df<-read.csv(current_file)%>%
+        select(X, X15:X30)#only select codons in the mutated portion
+      colnames(current_df)<-c("codon", 85:100) #adjusts the numbering of positions to match the other experiments
+    }
+  } # import the file with the right number of codons depending on the length of DMS
+  
+  #Change to long format, add the aa the codon codes for and library number, then join the relevant information from info df
+  current_df %<>%
+    pivot_longer(cols=-codon, names_to = "position", values_to = "reads", names_transform =  as.integer)%>%
+    mutate(aa=as.character(bioseq::seq_translate(bioseq::dna(codon))),
+           library=info[i, "library"]) %>%
+    left_join(., info, by="library")
+  
+  #add to the df of all libraries 
+  df<-rbind(df, current_df)
+}
+rm(current_df, i, current_file)
+
+```
+
+
+```{r}
+
+#### CHUNK 4 : Identify mutation types ####
+
+###Identify each mutant as Wt, Synonymous, non-synonymous or STOP
+
+#Combine the WT sequences together to do both proteins in the same command
+pbs2_wt_seq<-pbs2_wt_seq %>% 
+          mutate(codon_type="WT", aa_type="WT")
+
+#Join df with the WT sequence to indicate which codons and aa are Wt. Then indicate whether position is WT, synonymous, STOP or non-synonymous depending on the WT of codon and aa, and aa identity.
+df %<>%   left_join(., select(pbs2_wt_seq, -c(aa, aa_type)), by=c("position", "target", "codon")) %>%
+          left_join(., select(pbs2_wt_seq, -c(codon, codon_type)), by=c("position", "target", "aa")) %>%
+          mutate(type=  case_when(codon_type == "WT" & aa_type == "WT" ~ "WT",
+                                  is.na(codon_type) & aa_type == "WT" ~ "Syn",
+                                  aa == "*" ~ "STOP",
+                                  is.na(codon_type) & is.na(aa_type) & aa != "*" ~ "Non-Syn")) %>%
+          select(-c(codon_type, aa_type))
+  
+```
+
+
+```{r}
+
+#### CHUNK 5 : Add WT counts ####
+
+#Add WT reads into the reads column, by taking the per position read count for each library (from the WT_reads column)
+df %<>%mutate(reads_w_wt = case_when( type == "WT" & screen == "preliminary" ~ wt_reads/56,
+                                      type == "WT" & screen == "motif_only" ~ wt_reads/16)) %>%
+       tidyr::unite(reads, reads_w_wt, "reads", remove=T, na.rm=T) %>%
+       mutate(reads = as.numeric(reads))
+
+```
+
+```{r}
+
+#### CHUNK 6 : Bring reads to 1####
+
+#Many of the possible mutations have zero reads after selection, and so appear as NA. However, these are mutations which are the most selected against, and should show up. I will therefore replace the NA reads by 1 read, which is the lowest which allows calculation of a selection coefficient. For the S2 reads, even if brought up to 1, they will be filtered out, as they are less than 20
+
+df$reads <- tidyr::replace_na(df$reads, 1) 
+
+```
+
+```{r}
+
+#### CHUNK 7 : Assign codon classification ####
+
+
+#The motif-only DMS experiment used NNK codons, so only those codons which end with G or T. Here I am removing non-NNK codons, which might have a few reads as sequencing errors
+df <- df %>%
+          mutate(nnk = case_when(str_sub(codon, start= -1) == "G" | str_sub(codon, start= -1) == "T" ~ "NNK",
+                                 str_sub( codon, start= -1) == "A" | str_sub(codon, start= -1) == "C" ~ "non-NNK")) 
+
+
+if (screen == "motif_only"){
+  df<-df%>%
+    filter(nnk == "NNK" | type =="WT")
+}
+
+
+
+```
+
+```{r}
+
+#### CHUNK 8 : Normalize read counts ####
+
+#Normalize by dividing number of reads for each mutation by the number of total reads in the library. Taking frequency of mutation essentially.
+
+
+total_reads <- df %>%
+           group_by(library) %>%
+           summarise(total_reads_in_library = sum(as.numeric(reads), na.rm=T))
+
+df %<>%    left_join(., total_reads, by="library") %>%
+           mutate(norm_final_reads = reads/total_reads_in_library, norm_final_wt_reads = wt_reads/total_reads_in_library) 
+#For WT reads, take the frequency of WT, because what we really want to measure are allele frequencies
+
+rm(total_reads)
+      
+
+```
+
+```{r, warning=F, message=F}
+
+#### CHUNK 9 : Check correlation between libraries ####
+
+log2_df <- df %>% mutate(log_norm_reads = log2(norm_final_reads))
+
+ggplot(log2_df, aes(x=log_norm_reads, colour=interaction(condition, sorbitol, interactor), linetype = nnk))+
+  geom_density()+
+  #facet_wrap(~target)+
+  scale_colour_viridis_d(option="turbo")
+
+#What is the read count for each variant for the different libraries?
+log2_df%>%
+  filter(nnk=="NNK")%>%
+  ggplot(aes(x=as.factor(library), y=log2(reads), fill=condition, colour=interactor))+
+  geom_violin()+
+  scale_colour_viridis_d()+
+  theme_bw()+
+  labs(title="Distribution of read counts for each library")
+
+#What is the frequency distribution for each variant in each library?
+log2_df%>%
+  ggplot(aes(x=as.factor(library), y=log_norm_reads, fill=condition, colour=interactor))+
+  geom_violin()+
+  scale_colour_viridis_d()+
+  theme_bw()+
+  labs(title="Variant frequency distribution for each library")
+
+
+log2_df%>%select(codon, position, condition, interactor, sorbitol, replicate, log_norm_reads)%>%
+  pivot_wider(names_from = replicate, values_from = log_norm_reads)%>%
+  ggpairs(columns = 6:ncol(.))
+
+#Check the correlation between number of reads for mutations in all libraries
+cor_df_prep<- log2_df %>%
+           unite(col="identifier", target, condition, sorbitol, interactor, replicate, strain_background, remove = FALSE) %>%
+           select(identifier, log_norm_reads, position, codon) %>%
+           pivot_wider(names_from = identifier, values_from = log_norm_reads)
+  
+cor_df <- as.data.frame(cor(cor_df_prep[,-c(1,2)], method="spearman", use="pairwise.complete.obs")) %>%
+          mutate(lib1=colnames(cor_df_prep[,-c(1,2)])) %>%
+          pivot_longer(cols=-lib1, names_to = "lib2", values_to = "cor.coef")
+
+#Heatmap of correlation matrix
+ggplot(cor_df, aes(x=lib1, y=lib2, fill=cor.coef))+
+  geom_tile(colour="grey50")+
+  # geom_hline(yintercept = seq(3.5, 71, by=3))+
+  # geom_vline(xintercept = seq(3.5, 71, by=3))+
+  #geom_text(aes(label=str_sub(cor.coef, 1, 4)), size=1)+
+    scale_fill_gradient(low="white", high="red")+
+  scale_x_discrete(position="top", expand=c(0,0), limits=colnames(cor_df_prep[,-c(1,2)]))+
+  scale_y_discrete(expand=c(0,0), limits=rev(colnames(cor_df_prep[,-c(1,2)])))+
+  #theme(axis.text.x = element_text(angle=90, hjust=0, vjust=0))+
+  guides(x=guide_axis(angle=45))+
+  labs(x="", y="", 
+      fill="rho")+
+  coord_fixed(ratio=1)
+
+
+
+
+rm(cor_df_prep, cor_df, log2_df)
+```
+
+```{r}
+
+#### CHUNK 10 : Add initial timepoint ####
+
+#Organise the initial timepoints (S2) so that I can add them back as a column
+ini_df<-df %>%
+        filter(condition == "S2") %>%
+        rename(norm_ini_reads = norm_final_reads, norm_ini_wt_reads = norm_final_wt_reads, S2_reads = reads) %>%
+        select(c(codon, position, S2_reads, norm_ini_reads, replicate, target, interactor, norm_ini_wt_reads, strain_background))
+
+#Add the initial timepoints back as a column, then remove the initial timepoint rows
+df %<>% left_join(., ini_df, by=c("codon", "position", "replicate", "target", "interactor", "strain_background")) %>%
+        filter(condition != "S2")
+
+rm(ini_df)
+
+
+```
+
+
+```{r}
+
+#### CHUNK 11 : Calculate variant scores ####
+
+#first find the number of generations for each library, then calculate selection coefficient and log2FC
+df %<>%   mutate(gens=log2(first_selection_final_OD/0.1)+log2(second_selection_final_OD/0.1))%>%
+            mutate(selection_coefficient = (log(norm_final_reads/norm_ini_reads)-log(norm_final_wt_reads/norm_ini_wt_reads))/gens,
+                   log2FC=log2(norm_final_reads/norm_ini_reads)) %>%
+          mutate(library = paste0("library_", library)) %>%
+          unite(col="identifier", target, condition, sorbitol, interactor, replicate, strain_background, remove = FALSE)   
+
+
+
+#Calculate the correlation between selection coefficients of all libraries
+cor_df_prep<- df %>%
+           select(identifier, selection_coefficient, position, codon) %>%
+           pivot_wider( names_from = identifier, values_from = selection_coefficient)
+  
+cor_df <- as.data.frame(cor(cor_df_prep[,-c(1,2 )], method="spearman", use="pairwise.complete.obs")) %>%
+          mutate(lib1=colnames(cor_df_prep[,-c(1,2)])) %>%
+          pivot_longer(cols=-c(lib1, ), names_to = "lib2", values_to = "cor.coef")
+
+#Correlation matrix of selection coefficients as heatmap
+g<-ggplot(cor_df, aes(x=lib1, y=lib2, fill=cor.coef))+
+  geom_tile(colour="grey50")+
+    scale_fill_gradient(low="white", high="blue")+
+  scale_x_discrete(position="top", expand=c(0,0), limits=colnames(cor_df_prep[,-c(1,2)]))+
+  scale_y_discrete(expand=c(0,0), limits=rev(colnames(cor_df_prep[,-c(1,2)])))+
+  theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1))+
+  labs(x="", y="", 
+      fill="rho")+
+  guides(x=guide_axis(angle=45))+
+  coord_fixed(ratio=1)
+g
+
+
+
+rm(cor_df_prep, cor_df)
+
+
+
+
+rm(p,g)
+```
+
+
+```{r}
+
+#### CHUNK 12 : Codon level heatmaps ####
+
+#Preliminary look at heatmaps
+ggplot(df, aes(x=position, y=codon, fill=selection_coefficient))+
+  geom_tile()+
+  facet_wrap(~identifier)+
+  scale_fill_gradient2(low="blue", mid="white", high="red")+
+  theme(panel.background = element_rect(fill="black"),
+          panel.grid.major = element_blank())
+```
+
+
+```{r}
+
+#### CHUNK 13 : Filter by initial reads ####
+
+#Does the number of initial reads influence the selection coefficient calculated?
+
+
+ggplot(df, aes(y=log2FC, x=log2(S2_reads)))+
+  geom_point(shape=21, alpha=0.5, aes(colour=type))+
+  geom_smooth(colour="black", method="lm")+
+  stat_cor(method = "spearman", cor.coef.name = "rho")
+
+
+
+#Cut all variants that do not have at least twenty reads detected at initial timepoint
+cut_df <- df %>%
+            filter(S2_reads >=20) %>%
+            unite("identifier", target, condition, sorbitol, interactor, strain_background, remove=F)
+
+#Does the frequency of initial reads bias the log2FC after quality control
+ggplot(cut_df, aes(y=log2FC, x=log2(S2_reads)))+
+  geom_point(shape=21, alpha=0.5, aes(colour=type))+
+  geom_smooth(colour="black", method="lm")+
+  stat_cor(method = "spearman", cor.coef.name = "rho")
+
+```
+
+```{r}
+
+#### CHUNK 14 : Remove outlier variants####
+
+# ARE ANY STOP MUTANTS SIG DIFFERENT IN DMSO?
+
+stop_to_remove<-c()
+for (i in cut_df%>%filter(condition == "DMSO" & sorbitol ==1 & interactor == "Sho1" & type == "STOP")%>%pull(position)%>%unique()%>%sort()){ #Cycle through STOP codons in DMSO
+  d<-cut_df%>%
+  filter(condition == "DMSO" & sorbitol ==1 & interactor == "Sho1" & type == "STOP")%>%
+  mutate(category=case_when(position == i ~ paste(i),
+                            TRUE ~ "STOP"))%>%
+  rstatix::wilcox_test(log2FC ~ category, detailed=F)%>% #Test if sig different from oter STOP codons
+    select(p)
+  
+  if(d[1,1]<=0.05){print(paste0("Stop ",i))
+    stop_to_remove<-append(stop_to_remove, i)}
+  
+}
+  
+
+
+####ARE ANY SYN MUTANTS DIFFERENT IN DMSO?####
+
+syn_to_remove<-c()
+for(i in cut_df%>%filter(condition == "DMSO" & sorbitol ==1 & interactor == "Sho1" & type == "Syn")%>%pull(position)%>%unique()%>%sort()){ #Cycle through Synonymous mutants
+ d<-cut_df%>%
+   filter(type != "WT" | position ==85)%>% #Keep one WT value for test
+  filter(condition == "DMSO" & sorbitol ==1 & interactor == "Sho1" & type == "Syn")%>%
+  mutate(category=case_when(position == i  ~ paste(i),
+                            TRUE ~ "Syn"))%>%
+  rstatix::wilcox_test(log2FC ~ category, detailed=F)%>% #test if sig different from other Syn codons
+    select(p)
+  
+  if(d[1,1]<=0.05){print(paste0("Synonymous ",i))
+    syn_to_remove<-append(syn_to_remove, i)}
+   
+}
+  
+
+#Remove sig different STOP and Syn mutants
+cut_df<-cut_df%>%
+  filter(!(position %in% stop_to_remove) | type != "STOP" | interactor %in% c("None", "Hog1"))%>%
+  filter(!(position %in% syn_to_remove) | type != "Syn" |  interactor %in% c("None", "Hog1"))
+
+
+#### ARE ANY NON-SYN MUTANTS SIG DIFFERENT IN DMSO? ####
+
+filter_t_test<-cut_df%>%
+  filter(condition == "DMSO" & sorbitol == 1 & interactor == "Sho1")%>%
+  dplyr::mutate(identity=case_when(type %in% c("Non-Syn","WT", "Syn" ) ~ paste(position, aa, sep="_"), #Separate Non-synonymous mutants,
+                                   type %in% c("STOP") ~ "STOP"))%>%               #STOP mutants, the reference
+  group_by(condition, interactor, sorbitol)%>%                                     #Group for T-test
+  rstatix::pairwise_wilcox_test(log2FC ~ identity,                                 #Non-parametric t-test
+                                ref.group = "STOP",                                #Compare Non-syn mutants against all Syn+WT
+                                p.adjust.method = "fdr",                           #Correction for multiple corrections
+                                alternative ="two.sided")%>%                       #Two-sided t-test
+  filter(p.adj.signif == "ns")%>%     
+  pull(group2)  #Vector of sig different mutants
+
+print(filter_t_test)
+
+cut_df<-cut_df%>%
+  unite(identity, position, aa, remove=F, sep="_")%>%
+  filter(!(identity %in% filter_t_test) | condition == "Stress") #Remove sig different mutants
+
+rm(filter_t_test, i, stop_to_remove, syn_to_remove, d)
+```
+
+```{r}
+
+#### CHUNK 15 : Classify all variant scores ####
+
+#Using a t-test, test each aa level variant to see if the score is significantly different from the score of Wt+Syn variants
+
+#Add p-value for log2FC
+log2FC_t_test<-cut_df%>%
+  filter(type !="WT" | position == 85)%>%                                            #Only 1 value for WT instead of 1 per position 
+  dplyr::mutate(identity=case_when(type %in% c("Non-Syn", "STOP") ~ paste(position, aa, sep="_"), #Separate Non-synonymous mutants,
+                                   type %in% c("WT", "Syn") ~ "Syn+WT"))%>%          #WT and Syn mutants. the "reference" is WT+Syn pooled
+  group_by(condition, interactor, sorbitol)%>%                                       #Group for T-test
+  rstatix::pairwise_wilcox_test(log2FC ~ identity,                                   #Non-parametric t-test
+                                ref.group = "Syn+WT",                                #Compare Non-syn mutants against all Syn+WT   
+                                p.adjust.method = "fdr",                             #Correction for multiple comparisons
+                                alternative ="two.sided")%>%                         #Two-sided t-test                             
+  rename(identity = group2, p.signif_log2FC=p.adj.signif, p.adj.log2FC=p.adj)%>%     #For joining later
+  select(c(condition, interactor, sorbitol, identity, p.adj.log2FC, p.signif_log2FC))#Keep only relevant columns
+
+#Add p-value for selection coefficient
+
+sel_coeff_t_test<-cut_df%>%
+  filter(type !="WT" | position == 85)%>%                                            #Only 1 value for WT instead of 1 per position 
+  dplyr::mutate(identity=case_when(type %in% c("Non-Syn", "STOP") ~ paste(position, aa, sep="_"), #Separate Non-synonymous mutants,
+                                   type == "Syn" | type == "WT" ~ "Syn+WT"))%>%         #WT and Syn mutants. the "reference" is WT+Syn pooled
+  group_by(condition, interactor, sorbitol)%>%                                       #Group for T-test
+  rstatix::pairwise_wilcox_test(selection_coefficient ~ identity,                    #Non-parametric t-test
+                                ref.group = "Syn+WT",                                #Compare Non-syn mutants against all Syn+WT
+                                p.adjust.method = "fdr",                             #Correction for multiple comparisons
+                                alternative ="two.sided")%>%                         #Two-sided t-test  
+  rename(identity = group2, p.signif_sel_coeff=p.adj.signif, p.adj.sel_coeff=p.adj) %>%   #For joining later
+  select(c(condition, interactor, sorbitol, identity, p.adj.sel_coeff, p.signif_sel_coeff))    #Keep only relevant columns
+
+#Join both data frames
+t_test<-full_join(log2FC_t_test, sel_coeff_t_test, by=c("condition", "interactor", "sorbitol", "identity"))
+
+rm(log2FC_t_test, sel_coeff_t_test)
+```
+
+
+```{r}
+
+#### CHUNK 16 : Combine to aa ####
+
+#Combine replicates and codons together to get aa level stats. Only take AA with at least 2 replicates passing quality control
+cut_comb_df<- cut_df %>%
+          group_by(position, target, condition, sorbitol, interactor, aa, strain_background, type) %>%
+          summarize(median_sel_coeff = median(selection_coefficient, na.rm = T),
+                    replicates_per_aa = n(),
+                    median_log2FC=median(log2FC, na.rm=T),
+                    sd_log2FC=sd(log2FC, na.rm=T),
+                    sd_sel_coeff = sd(selection_coefficient, na.rm = T),
+                    min_S2_reads = min(S2_reads, na.rm=T)) %>%
+          filter(replicates_per_aa >= 2) %>%
+          unite("identifier", target, condition, sorbitol, interactor, strain_background, remove=F)
+
+#Visualise filtered interaction scores
+ggplot(cut_comb_df, aes(x=position, y=aa, fill=median_sel_coeff))+
+  geom_tile()+
+  scale_x_discrete(expand=c(0,0))+
+  scale_y_discrete(expand = c(0,0))+
+  facet_grid(rows = vars(strain_background), cols = vars(interaction(condition, sorbitol, interactor)))+
+  scale_fill_gradient2(low="blue", mid="white", high="red")+
+  theme(panel.border = element_rect(fill = NA, colour="black"),
+        panel.background = element_rect(fill="black"),
+          panel.grid.major = element_blank())
+
+#black tiles = Cut from results because not enough S2 reads(less than 20 in 2 of 3 replicates)
+for (i in unique(cut_comb_df$identifier)){
+  p<- filter(cut_comb_df, identifier == i) %>%
+    ggplot(., aes(x=position, y=aa, fill=median_sel_coeff))+
+  geom_tile(colour="black")+
+  scale_x_discrete(limits=seq(from=15, to=30, by=5), expand=c(0,0))+
+  scale_y_discrete(limits=c("E", "D", "R", "K", "H","Q","N","T","S","Y", "F", "W", "P", "C", "M", "I", "L", "V", "A", "G", "*"), expand=c(0,0))+
+    scale_fill_gradient2(low="blue", mid="white", high="red", limits=c(min(cut_comb_df$median_sel_coeff, na.rm=T), max(cut_comb_df$median_sel_coeff, na.rm=T)))+
+    theme(panel.background = element_rect(fill="black"),
+          panel.grid.major = element_blank())+
+  labs(x="position", 
+       y="aa")+
+    ggtitle(i)
+  
+  print(p)
+}
+
+rm(p,i)
+```
+
+
+```{r}
+
+#### CHUNK 17 : Remove destabilizing variants ####
+
+#Prepare t-test results for combining
+t_test<-separate_wider_delim(t_test, cols=identity, delim="_", names=c("position", "aa"))%>%
+  mutate(position= as.numeric(position))
+
+
+#Combine DMS scores with the test results
+classify<-left_join(cut_comb_df, t_test, by=c("condition", "sorbitol", "interactor", "position", "aa"))%>%
+  replace_na(list(p.signif_log2FC="ns",
+                  p.signif_sel_coeff="ns"))%>%
+  ungroup()
+
+#Identify mutations that affect interaction with Hog1
+if (screen == "motif_only"){
+hog1_different<-classify%>%
+  ungroup()%>%
+  filter(interactor == "Hog1" & !(p.signif_log2FC %in% c("ns", NA)) & type == "Non-Syn")%>% 
+  select(position, aa, condition, sorbitol, strain_background, type)%>%
+  filter(condition == "MTX") #Take only those destabilizing in MTX (condition that measures interaction)
+
+#Remove mutants not growing in Hog1 
+classify<-anti_join(classify, 
+                    hog1_different, 
+                    by=c("position", "aa", "sorbitol", "strain_background", "type"))
+}       
+
+
+
+
+rm(hog1_different)
+rm(t_test)
+```
+
+
+```{r}
+
+#### CHUNK 18 : Plot variant scores ####
+
+#Plot proportion of significant mutants in each condition
+classify%>%
+  filter(type == "Non-Syn")%>%
+  ggplot(aes(x=identifier))+
+  geom_bar(aes(fill=factor(p.signif_log2FC, levels = c("****", "***", "**","*","ns"))))+
+  labs(title = "Count of significant mutants per library",
+       x="Library (Condition, Interactor, Sorbitol conc)",
+       y="Count",
+       fill= "Significance threshold")+
+  scale_y_continuous(expand=c(0, 0.05))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+
+
+
+```
+
+
+```{r}
+
+#### CHUNK 19 : Quantify significant mutants ####
+
+#Which percentage of mutants are sig diff than WT+Syn in MTX Sho1 Sorb?
+
+perc <- function(df, condition_val = "DMSO", interactor_val = "Hog1", sorbitol_conc = 0) {
+  # Filtering the dataframe based on specified conditions
+  x <- df %>%
+    filter(condition == condition_val & interactor == interactor_val & sorbitol == as.numeric(sorbitol_conc))
+
+  # Extracting WT log2FC for these conditions
+  wt_value <- x %>%
+    filter(type == "WT") %>%
+    pull(median_log2FC) %>%
+    unique()
+
+  # Counting total mutants after filtering
+  total_n <- nrow(x)
+
+  if(condition_val != "Stress"){ #Taking only interaction strength
+   # Counting mutants that are signif stronger or weaker than WT for log2FC
+    greater <- x %>%
+      filter(type == "Non-Syn")%>%
+      filter(p.adj.log2FC <= 0.05) %>%
+      filter(median_log2FC > wt_value) %>%
+      nrow()
+  
+    lower <- x %>%
+      filter(type == "Non-Syn")%>%
+      filter(p.adj.log2FC <= 0.05) %>%
+      filter(median_log2FC < wt_value) %>%
+      nrow()
+  }else{ #Taking only fitness
+  # Counting mutants that are signif stronger or weaker than WT for log2FC
+    greater <- x %>%
+      filter(type == "Non-Syn")%>%
+      filter(p.adj.sel_coeff <= 0.05) %>%
+      filter(median_sel_coeff > 0) %>%
+      nrow()
+  
+    lower <- x %>%
+      filter(type == "Non-Syn")%>%
+      filter(p.adj.sel_coeff <= 0.05) %>%
+      filter(median_sel_coeff < 0) %>%
+      nrow()
+  }
+  
+  # Calculating percentages of greater and lower values
+  perc_greater <- (greater / total_n) * 100
+  perc_lower <- (lower / total_n) * 100
+
+  # Constructing a dataframe with the results
+  results <- data.frame(
+    condition = condition_val,
+    interactor = interactor_val,
+    sorbitol = sorbitol_conc,
+    n_greater = greater,
+    perc_greater = perc_greater,
+    n_lower = lower,
+    perc_lower = perc_lower
+  )
+
+  # Returning the results dataframe
+  return(results)
+}
+
+
+
+#Run function for all conditions
+combs<-unique(classify[, c("condition", "interactor", "sorbitol")])
+signif_summary<-data.frame()
+for (i in 1:nrow(combs)){
+  
+  signif_summary<-bind_rows(signif_summary, 
+  perc(classify, 
+       condition_val = combs[[i, 1]],
+       interactor_val = combs[[i, 2]], 
+       sorbitol_conc = combs[[i, 3]]))
+}
+
+wt_value<- classify %>%
+  filter(condition =="MTX" & sorbitol ==1 & interactor =="Sho1")%>%
+    filter(type == "WT") %>%
+    pull(median_log2FC) %>%
+    unique()
+  
+#What is the impact on fitness of mutants that interact stronger?
+sig_stronger<-classify%>%
+  filter(condition =="MTX" & sorbitol ==1 & interactor =="Sho1")%>%
+  filter(median_log2FC > wt_value & !(p.signif_log2FC %in% c(NA, "ns")))%>%
+  unite(identity, position, aa, remove=F, sep="")%>%
+  pull(identity)
+
+classify%>%
+  filter(condition =="Stress" & sorbitol ==1 & interactor =="None")%>%
+  unite(identity, position, aa, remove=F, sep="")%>%
+  filter(identity %in% sig_stronger)
+
+rm(i, combs, sig_stronger, wt_value)
+```
+
+
+```{r}
+
+#### CHUNK 20 : Export data####
+
+write.csv(cut_df, codon_output_file, row.names = F)
+write.csv(classify, aa_output_file, row.names = F)
+write.csv(signif_summary, summary_output_file ,row.names=F)
+
+```
