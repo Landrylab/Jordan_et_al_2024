@@ -1,0 +1,777 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+#For the second sequencing run of the DHFR-PCA competition assay on the DMS library of the Pbs2 extended motif,
+#Illumina Nextera barcodes were used, which allows automated demultiplexing by MiSeq machines. There is therefore
+#no accompanying demultiplexing script
+#This script counts how many times each Pbs2 mutation appears in each library
+
+#This script is written in an R notebook, with chunks in both R and Python. The reticulate R package will be needed to run this notebook. 
+```
+
+
+```{python, Chunk 1 : Python Imports}
+#%% Chunk 1 : Imports
+
+
+import os
+import subprocess
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+```
+
+```{r, Chunk 2 : Load R libraries}
+#Load libraries
+library(ggplot2)
+library(reticulate)
+library(dplyr)
+library(tidyr)
+
+```
+
+
+```{python, Chunk 3 : Declaration of variables}
+
+#Set this to the folder containing this script.
+os.chdir("/your/path/")
+
+sheet = "../../../Data/demultiplexed_sequencing_reads/extended_motif_second_run/extended_sequence_second_sample_sheet_demultiplexed.csv"
+
+filled_sample_sheet="../../../Data/demultiplexed_sequencing_reads/extended_motif_second_run/extended_sequence_second_sample_sheet_final.csv"
+pbs2_wt = "../../../Data/demultiplexed_sequencing_reads/common_sequences/Pbs2_sequence.fasta"
+
+
+pbs2_wt_seq = "AGTAATCAAAGCGAGCAAGACAAAGGCAGTTCACAATCACCTAAACATATTCAGCAGATTGTTAATAAGCCATTGCCGCCTCTTCCCGTAGCAGGAAGTTCTAAGGTTTCACAAAGAATGAGTAGCCAAGTCGTGCAAGCGTCCTCCAAGAGCACTCTTAAGAACGTT"
+
+demultiplexed_reads_folder="../../../Data/demultiplexed_sequencing_reads/extended_motif_second_run/extended_motif_second_run_demultiplexed/"
+
+#Load the sample sheet
+sample_sheet = pd.read_csv(sheet, header=0)
+sample_sheet=sample_sheet.set_index("Sample_ID")
+del(sheet)
+```
+
+```{python, Chunk 4 : Count reads in initial files}
+
+
+
+for i in list(sample_sheet.index):
+
+    f_file=sample_sheet.loc[i, "F_file"]
+    cmdline_count_R1 = f"zcat {demultiplexed_reads_folder}{f_file} | wc -l"
+    result_R1 = subprocess.check_output(cmdline_count_R1, shell=True)
+    count_R1=int(result_R1)/4
+    r_file=sample_sheet.loc[i, "R_file"]
+    cmdline_count_R2 = f"zcat {demultiplexed_reads_folder}{r_file} | wc -l"
+    result_R2 = subprocess.check_output(cmdline_count_R2, shell=True)
+    count_R2=int(result_R2)/4
+    
+    if count_R1==count_R2:
+        print("Both files have the same number of reads")
+        print(f"Number of reads = {count_R1}")
+        sample_sheet.loc[i, "demultiplexed_counts"]=int(count_R1)
+    else :
+        print("Files do not have the same number of reads")
+        print(f"F : {count_R1},  R : {count_R2}")
+
+del(cmdline_count_R1, cmdline_count_R2, result_R1, result_R2, count_R1, count_R2)
+```
+
+```{r, Chunk 5 : Graph of demultiplexed Reads}
+
+
+ggplot(py$sample_sheet, aes(x=library_ID, y=log2(demultiplexed_counts)))+
+  geom_col()+
+  geom_hline(yintercept = log2(384615), linetype="dashed")+#Number of reads per library asked for
+  theme(axis.text.x=element_text(angle = 90, vjust = 0.5))
+
+```
+
+```{python, Chunk 6 : trimming}
+
+
+if not os.path.exists("./trimmed_reads"):
+    os.makedirs("./trimmed_reads")
+    
+for i in list(sample_sheet.index):
+    
+    f_file=sample_sheet.loc[i, "F_file"]
+    r_file=sample_sheet.loc[i, "R_file"]
+    trimmed_f_file = f"./trimmed_reads/lib{i}_F_trimmed.fastq.gz"
+    sample_sheet.loc[i, "trimmed_F_file"]=trimmed_f_file
+    trimmed_r_file=f"./trimmed_reads/lib{i}_R_trimmed.fastq.gz"
+    sample_sheet.loc[i, "trimmed_R_file"]=trimmed_r_file
+    trimming_cmdline=f"trimmomatic PE -threads 8 -phred33 -summary ./trimmed_reads/trimstats_{i}.txt ./demultiplexed_files/{f_file} ./demultiplexed_files/{r_file} {trimmed_f_file} ./trimmed_reads/unpaired1P_{i}.fastq.gz {trimmed_r_file} ./trimmed_reads/unpaired2P_{i}.fastq.gz CROP:204" 
+    
+    subprocess.check_output(trimming_cmdline, shell=True)
+
+```
+
+```{python, Chunk 6b : trimming2, message=FALSE}
+if not os.path.exists("./trimmed/cutadapt"):
+  os.makedirs("./trimmed/cutadapt")
+
+for i in list(sample_sheet.index): 
+  trimmed_f_file=sample_sheet.loc[i, "trimmed_F_file"]
+  trimmed_r_file=sample_sheet.loc[i, "trimmed_R_file"]
+  sample_sheet.loc[i, "second_trimming_F_file"]=f"./trimmed/cutadapt/lib{i}_F_second_trimming.fastq.gz"
+  sample_sheet.loc[i, "second_trimming_R_file"]=f"./trimmed/cutadapt/lib{i}_R_second_trimming.fastq.gz"
+  cutadapt_file_F=sample_sheet.loc[i, "second_trimming_F_file"]
+  cutadapt_file_R=sample_sheet.loc[i, "second_trimming_R_file"]
+  # cmdline_cutadapt=f"cutadapt -e 0.3 -j0 --quiet -a AGGTCTGCCAGCGTGGGCAGTAATCAAAGCGAGCAAGACAAAGGCAGTTCACAATCACCT...GCAGGAAGTTCTAAGGTTTCACAAAGAATGAGTAGCCAAGTCGTGCAAGCGTCCTCCAAGAGCACTCTTAAGAACGTTCTGGACAATCAAGAAACA -A TGTTTCTTGATTGTCCAGAACGTTCTTAAGAGTGCTCTTGGAGGACGCTTGCACGACTTGGCTACTCATTCTTTGTGAAACCTTAGAACTTCCTGC...AATCTGCTGAATATGTTTAGGTGATTGTGAACTGCCTTTGTCTTGCTCGCTTTGATTACTGCCCACGCTGGCAGACCT -o {cutadapt_file_F} -p {cutadapt_file_R} {trimmed_f_file} {trimmed_r_file}"
+  cmdline_cutadapt=f"cutadapt -e 0.3 -j0 --quiet -a AGGTCTGCCAGCGTGGGC...CTGGACAATCAAGAAACA -A TGTTTCTTGATTGTCCAG...GCCCACGCTGGCAGACCT -o {cutadapt_file_F} -p {cutadapt_file_R} {trimmed_f_file} {trimmed_r_file}"
+  # print(cmdline_cutadapt)
+  subprocess.check_output(cmdline_cutadapt, shell=True)
+
+del(i, f_file, r_file, trimmed_f_file, trimmed_r_file, trimming_cmdline)
+```
+
+```{python, chunk 7 : Merging}
+
+
+
+if not os.path.exists("./merged"):
+    os.makedirs("./merged")
+    
+for i in list(sample_sheet.index):
+    merged_file=f"./merged/lib{i}_merged.fastq"
+    sample_sheet.loc[i, "merged_file"]=merged_file
+    f_file=sample_sheet.loc[i, "second_trimming_F_file"]
+    r_file=sample_sheet.loc[i, "second_trimming_R_file"]
+    cmdline_pandaseq = f"pandaseq  -l 168 -L 168 -g ./merged/log{i}.txt -f {f_file}  -r {r_file} -F -w {merged_file}" #Changed from -o 200 -L204, -o 48 -L 48
+    print(cmdline_pandaseq)
+    subprocess.check_output(cmdline_pandaseq, shell=True)
+
+# for i in list(sample_sheet.index):
+#   merged_file=f"./merged/lib{i}_merged.fastq"
+#   sample_sheet.loc[i, "merged_file"]=merged_file
+#   f_file=sample_sheet.loc[i, "trimmed_F_file"]
+#   r_file=sample_sheet.loc[i, "trimmed_R_file"]
+#   cmdline_pandaseq = f"pandaseq  -l 48 -L 204 -g ./merged/log{i}.txt -f {f_file}  -r {r_file} -F -w {merged_file}" #Changed from -o 200 -L204, -o 48 -L 48
+#   print(cmdline_pandaseq)
+#   subprocess.check_output(cmdline_pandaseq, shell=True)
+
+del(i, f_file, r_file, cmdline_pandaseq, merged_file)
+```
+
+```{python, chunk 8 : Count merged reads}
+
+for i in list(sample_sheet.index):
+
+    file=sample_sheet.loc[i, "merged_file"]
+    cmdline_count = f"cat {file} | wc -l"
+    result= int(subprocess.check_output(cmdline_count, shell=True))/4
+    sample_sheet.loc[i, "merged_counts"]=result
+    
+
+
+del(i, cmdline_count, result, file)
+```
+
+
+```{r, Chunk 9 : Graph of merged reads}
+
+py$sample_sheet%>%
+  select(c(library_ID, merged_counts, demultiplexed_counts))%>%
+  pivot_longer(cols=c(merged_counts, demultiplexed_counts), names_to = "step", values_to = "reads")%>%
+ggplot(aes(x=library_ID, y=log2(reads), fill=step))+
+  geom_col(position="dodge")+
+  geom_hline(yintercept=log2(384615), linetype="dashed")+
+  theme(axis.text.x=element_text(angle=90, vjust=0.5))
+
+```
+
+```{python, Chunk 10 : aggregate reads}
+
+if not os.path.exists("./aggregated"):
+    os.makedirs("./aggregated")
+
+
+
+for i in list(sample_sheet.index):
+    #Indicate file locations
+    in_file=sample_sheet.loc[i, "merged_file"]
+    out_file=f"./aggregated/aggregated_lib{i}.fa"
+    #Add file location information to information df
+    sample_sheet.loc[i, 'aggregated_file']=out_file
+    #Create command to aggregate reads
+    #Since vsearch 2.20, the derep_fulllength command has been replaced with fastx_uniques, and the output option with --fastaout
+    vsearch_aggregate_call = f'vsearch --fastx_uniques {in_file} --relabel seq --quiet --fastaout {out_file} --sizeout'
+    #print (vsearch_aggregate_call)
+    #Run the command on bash
+    subprocess.check_output(vsearch_aggregate_call, shell=True)
+    
+del(in_file, out_file, vsearch_aggregate_call, i)
+```
+
+```{python, Chunk 11 : Count aggregated reads}
+
+for i in list(sample_sheet.index):
+    #Find the aggregated fasta file
+    file_to_count=sample_sheet.loc[i, "aggregated_file"]
+    #write bash command to count all unique reads per library
+    cmdline_unique=f'grep -c ">" {file_to_count}'
+    #print(cmdline_unique)
+    #Run bash line to count unique reads
+    unique_seq_number=subprocess.getoutput(cmdline_unique)
+    #Write number of unique sequences to df
+    sample_sheet.loc[i, "unique_sequences"] = pd.to_numeric(unique_seq_number)
+    #Write bash line to count all sequences with one read (singletons)
+    cmdline_singleton = f'grep -c "size=1" {file_to_count}'
+    #print(cmdline_singleton)
+    #Run bash line to count singletons
+    singleton_number=subprocess.getoutput(cmdline_singleton)
+    #Write number of singleton sequences to df
+    sample_sheet.loc[i, "singletons"] = pd.to_numeric(singleton_number)
+
+del(file_to_count, cmdline_unique, unique_seq_number, cmdline_singleton, singleton_number, i )
+
+```
+
+```{r, Chunk 12 : Graph unique and singleton seqs}
+
+py$sample_sheet%>%
+  select(c(library_ID, merged_counts, demultiplexed_counts, unique_sequences, singletons))%>%
+  pivot_longer(cols=c(merged_counts, demultiplexed_counts, unique_sequences, singletons), names_to = "step", values_to = "reads")%>%
+ggplot(aes(x=library_ID, y=log2(reads), fill=step))+
+  geom_col(position="dodge")+
+  geom_hline(yintercept = log2(384615), linetype="dashed")+
+  #scale_y_continuous(trans = "log2")+
+  theme(axis.text.x=element_text(angle=90, vjust=0.5))+
+  labs(title="Count of reads")
+
+py$sample_sheet%>%
+  select(c(library_ID, merged_counts, demultiplexed_counts, unique_sequences, singletons))%>%
+  mutate(percent_merged=(merged_counts/demultiplexed_counts)*100, percent_unique=(unique_sequences/demultiplexed_counts)*100, percent_singleton=(singletons/demultiplexed_counts)*100)%>%
+  select(c(library_ID, percent_merged, percent_unique, percent_singleton))%>%
+  tidyr::pivot_longer(cols = -library_ID, names_to = "Analysis_step", values_to = "Percent")%>%
+  ggplot(aes(x=library_ID, y=Percent, fill=Analysis_step))+
+  geom_col(position="dodge")+
+  scale_y_continuous(limits=c(0, 100), breaks=seq(0,100,by=10), expand=c(0,0))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=90, vjust=0.5))+
+  labs(x="Library",
+       y="Percent of demultiplexed reads",
+       title = "Percent of each type of read")
+  
+  
+
+```
+
+```{python, Chunk 13 : Align on WT with Needle}
+
+if not os.path.exists("./aligned"):
+    os.makedirs("./aligned")
+
+
+for i in list(sample_sheet.index):
+    #Define file paths
+    file_in= sample_sheet.loc[i, "aggregated_file"]
+    file_out= f'./aligned/lib{i}_aligned.needle'
+    sample_sheet.loc[i, "aligned_file"] = file_out
+    
+    #Write command line to run the needle alignment tool
+    cmdline_needle=f'needle -auto -gapopen 50 -asequence {pbs2_wt} -bsequence {file_in} -aformat markx10 -outfile {file_out}'
+    #print(cmdline_needle)
+    #Run command 
+    subprocess.check_output(cmdline_needle, shell = True)
+    
+del(i, file_in, file_out, cmdline_needle)
+
+```
+
+
+```{python, Chunk 14 : define alignment parser function}
+
+
+def parse_needle_output(Sample_ID):
+    # this function parses the needle alignments and extract the aligned sequences reference and query sequences. It takes as input the 
+    # path to the needle output
+    
+    n_aligns = 0
+    # counter for the number of alignments
+    
+    align_seqs_dict = {}
+    # empty container that will hold the aligned sequences
+                
+    needle_align_path = sample_sheet.loc[Sample_ID, "aligned_file"]
+    # path to the alignments
+        
+    with open(needle_align_path, 'r') as source:
+        # open the alignment
+        
+        current_align = ''
+        current_qseq = ''
+        current_sseq = ''
+        # empty container objects for data processing
+        
+        qseq_done = 0
+        #counter for the number of alignments processed
+        
+        for line in source:
+            # loop through the file
+            
+            if line.startswith('>>>') == True:
+                # detect headers
+                
+                n_aligns +=1
+                # increment alignment counter by one
+                
+                align_name = line.strip('>>>')
+                # get alignment name, looks like this:
+                
+                if n_aligns != 1:
+                    # if this is not the first alignment
+                    
+                    align_seqs_dict[current_align] = [current_qseq, current_sseq]
+                    # add the information on the previous alignment to the dict
+                    
+                    current_align = align_name
+                    # update the name for the new entry
+                    
+                    current_qseq = ''
+                    current_sseq = ''
+                    # reset temporary variables
+                    
+                    qseq_done = 0
+                    # reset indicator for query sequence extraction
+                    
+                else:
+                    current_align = align_name
+                    # for the fisrt sequence, just need to store the align name
+                    
+                    
+            elif line.startswith(';') == False and line.startswith('>') == False and line.startswith('\n') == False and line.startswith('#') == False:
+                # skip all the useless lines to process only the aligned sequences
+                
+                if qseq_done == 1:
+                    current_sseq += line.strip('\n')
+                    # if the query seq is done (qseq = 1), add sequence to the subject
+                    
+                else:
+                    current_qseq += line.strip('\n')
+                    # if the query seq is not done, continue to update it
+                    
+            elif line.startswith('#--') == True:
+                align_seqs_dict[align_name] = [current_qseq, current_sseq]
+                # update dict with info from the last entry in the alignment sequence
+                
+            else:
+                if qseq_done == 0 and current_qseq != '':
+                    qseq_done =1
+                    # if the qseq is recorded, update value
+                
+                    
+    return align_seqs_dict, n_aligns
+
+```
+
+```{python, Chunk 15 : Define function to identify mutations from alignment file}
+
+def find_mutations(Sample_ID):
+    # For a given path and reference sequence, runs the Needle alignment parser and
+    # then goes through the extracted alignments to find the differences between the aligned query and the reference.
+    #
+    
+    dict_of_mut_dicts[Sample_ID]={}
+   
+    
+    align_dict, align_count = parse_needle_output(Sample_ID)
+    # get the parsed alignments for the sample
+    
+    for entry in list(align_dict.keys()):
+        # loop through aligned sequences
+        
+        read_var_list = []
+        # temporary holder for mutations found in sequence
+        
+        query_seq = align_dict[entry][1]
+        # aligned cds sequence of the strain
+        
+        align_ref = align_dict[entry][0]
+        # aligned cds sequence of the reference
+        
+        gap_adjust = 0
+        # value used to adjust the cds sequence index for the presence of insertions in the strain sequence vs the 
+        # reference cds
+        
+        backtrack_adjust = 0
+        # value used to adjust the cds sequence index for the presence of deletions in the strain sequence vs the 
+        # reference cds
+        
+        temp_var = None
+        # temporary variable to hold the sequence of an insertion or deletion as a string. When the gap ends, annotation 
+        # will be added to read_var_list
+        
+        indel_start = 0
+        # position start of the indel annotation in the reference sequence, with adjustment for gap presence
+        
+        ref_seq_no_gaps = align_ref.replace('-','')
+        # reference sequence with gaps removed
+        
+        align_start = (amplicon_dict[ref_orf].index(ref_seq_no_gaps))+1
+        # position in the reference sequence where the alignment starts
+        
+        query_seq_no_gaps = len(query_seq.replace('-',''))
+        # length of the query when gaps are removed
+        
+        for nt in range(0, len(align_ref)):
+            # iterates through the entire alignment of the strain prot sequence
+            
+            if query_seq[nt] == '-':
+                # detect a deletion variant
+                
+                # logic for indel detection/annotation:
+                #
+                # suppose we have this alignment  
+                #
+                # 1 2 3 4 5 6 7 8 9
+                # A T - - A A A T G    strain variant: del gaps are indexed because the aa index is based on reference
+                # A T K P A - - T G
+                # 1 2 3 4 5     6 7    reference: insert gaps not indexed because aa positions do exist in reference
+                #
+                # following this logic, every time an insertion is detected and annotated, the gap_adjust value is 
+                # incremented by the length of the gap and used to adjust the variant mapping to make it match the 
+                # reference index values. The indel aa postion is the first residue detected as part of the indel
+                
+                
+                if indel_start == 0:
+                    # checks if the character is the start or the continuation of a gap in the alignment
+                    
+                    temp_var = 'del'+ align_ref[nt]
+                    indel_start = (nt+1-gap_adjust)
+                    # if it is, starts a new annotation entry with a start position compensated for previous insertions
+                    # (if any)
+                    
+                    backtrack_adjust += 1
+                    
+                else:
+                  
+                    temp_var += align_ref[nt]
+                    # if it is not, adds the following aa to the deletion annotation
+                    
+                    backtrack_adjust += 1
+                    
+                    
+            elif align_ref[nt] == '-':
+                # detects an insertion variant
+                
+                if indel_start == 0:
+                    # checks if the character is the start or the continuation of a gap in the alignment
+                    
+                    temp_var = 'ins'+ query_seq[nt]
+                    
+                    indel_start = (nt+1-gap_adjust)
+                    # if it is, starts a new annotation entry with a start position compensated for previous insertions
+                    # (if any)
+                    
+                    gap_adjust += 1
+                    # increments the gap adjust for the this added aa in the strain sequence                   
+                    
+                    
+                else:
+                  
+                    temp_var += query_seq[nt]
+                    # if it is not, adds the following aa to the insertion annotation
+                    
+                    gap_adjust += 1
+                    # increments the gap adjust for the this added aa in the strain sequence
+                    
+                    
+            elif query_seq[nt] != align_ref[nt]:
+                # detects a mismatch between the strain sequence and the reference
+                
+                
+                variant = align_ref[nt]+'|'+str((nt+1-gap_adjust))+'|'+query_seq[nt]
+                read_var_list.append(variant)
+                # creates an annotation for the strain-reference aa mismatch and appends it to the list of 
+                # annotations
+                
+            else:
+              
+                 if indel_start != 0:
+                    # detects if there is currently an open gap entry. If there is, then the detected mismatch means 
+                    # that it has now concluded
+                    
+                    read_var_list.append(str((indel_start))+temp_var)
+                    temp_var = None
+                    indel_start = 0
+                    # adds the indel annotation to the strain variant list and resets temporary variables for the next 
+                    # indel entry
+                    
+                    
+        if query_seq_no_gaps >=  len(ref_seq_no_gaps)*0.8 and len(read_var_list)<25:            
+            dict_of_mut_dicts[Sample_ID][entry] = read_var_list, align_start
+            # apply a filter for alignment quality: the alignment must cover at least 80% of the reference sequence and
+            # there must be less than 25 differences between the query and the reference (insertions, deletions or SNVs)
+                           
+    #return dict_of_mut_dicts[Sample_ID]
+
+```
+
+```{python, Chunk 16 : Parse alignment file}
+
+amplicon_dict={"Pbs2" : pbs2_wt_seq}
+ref_orf="Pbs2"
+dict_of_mut_dicts={}
+for i in list(sample_sheet.index):
+    print(i)
+    # muts_dicts = find_mutations(i)
+    find_mutations(i)
+
+del(i)
+
+```
+
+
+```{python, Chunk 17 : Function to obtain count of each variant}
+
+def get_variant_count(mutation_set, ref_seq, codon_start, n_aa):
+    
+    
+    for Sample_ID in list(sample_sheet.index):
+        #variants = list(mutation_set.keys())
+        var_dict_of_dicts[Sample_ID] = {}
+        
+        variants = list(dict_of_mut_dicts[Sample_ID].keys())
+        codon_groups = {}
+        
+        codon = 0
+       
+        
+        wt_count =0
+        valid_seq=0
+        
+        for nt in range(0, n_aa*3):
+             pos = nt+1
+            #so the indexing does not start at 0, and mess up the numbering with regards to the codons
+             if nt % 3 == 0:
+                 codon += 1
+                
+             codon_groups[pos] = codon
+            
+             var_dict_of_dicts[Sample_ID][codon] = {}
+            
+        wt_codons = {}
+            
+        ref = amplicon_dict[ref_seq]
+        
+        for aa in range(0, n_aa):
+            offset = 0#33
+            
+            start = offset+(aa*3)
+            
+            wt_codon=ref[start:(start+3)]
+            
+            wt_codons[(aa+codon_start)] = wt_codon
+            
+            #This is now a dict of dict of a dict. For each codon, there is a dict of all variants 
+            var_dict_of_dicts[Sample_ID][aa+codon_start][wt_codon]=np.nan
+            
+            
+            
+        for variant in variants:
+            
+            var_info = variant.split(',')
+            var_count =int(var_info[1].split(';')[1].strip('size='))
+                   
+            mut_list = mutation_set[Sample_ID][variant][0]
+            #mutation_set is pool_pos_muts
+            
+            
+            if var_count>=20:
+                #print(mut_list)
+                
+                for mutation in mut_list:
+                  
+                    if 'del' in mutation:
+                        mut_info = mutation.split('del')
+                        mut_pos = int(mut_info[0])
+                        
+                        if mut_pos == 1:
+                            mut_list.remove(mutation)
+                            
+                if len(mut_list) <=3 and 'ins' not in str(mut_list) and 'del' not in str(mut_list):
+                    
+                    if len(mut_list) ==0:
+                        wt_count += var_count
+                        
+                    else:
+                        #print(mut_list)
+                        mut_nt_list = []
+                        
+                        out_list = []
+                        
+                        for mutation in mut_list:
+                            
+                            mut_pos = int(mutation.split('|')[1])
+                            
+                            if mut_pos >= codon_start and mut_pos <=(n_aa*3):
+                            
+                                mut_nt_list.append(codon_groups[mut_pos])
+                                
+                            else:
+                                out_list.append(mut_pos)
+                            
+                        if len(set(mut_nt_list)) == 1:
+                            valid_seq+=var_count
+                            
+                            codon = int(list(set(mut_nt_list))[0])
+                            # info
+                            wt_seq = wt_codons[codon]
+                                                                          
+                            new_seq = [x for x in wt_seq]
+                            
+                            for mutation in mut_list:
+                                mut_pos = int(mutation.split('|')[1])
+                                mutation = mutation.split('|')[2]
+                                
+                                codon_pos = (mut_pos-1)%3
+                                
+                                new_seq[codon_pos] = mutation
+                                
+                            new_codon = ''.join(new_seq)
+                                
+                            #print(wt_seq, mut_list, new_codon)
+                            
+                            if new_codon in list(var_dict_of_dicts[Sample_ID][codon].keys()):
+                                
+                                
+                                var_dict_of_dicts[Sample_ID][codon][new_codon]+=var_count
+                                
+                            else:
+                                var_dict_of_dicts[Sample_ID][codon][new_codon]=var_count
+                                
+                                
+                            
+                        elif len(set(mut_nt_list)) == 0 and len(out_list)>=1:
+                            #print(mut_nt_list, out_list)
+                            wt_count+=var_count
+                        
+                        
+            elif var_count < 20:
+              
+                for mutation in mut_list:
+                  
+                    if 'del' in mutation:
+                        mut_info = mutation.split('del')
+                        mut_pos = int(mut_info[0])
+                        
+                        if mut_pos == 1:
+                            mut_list.remove(mutation)
+                        
+                if len(mut_list) <=3 and 'ins' not in str(mut_list) and 'del' not in str(mut_list):
+                  
+                    if len(mut_list) ==0:
+                        wt_count += var_count
+                        
+                    else:
+                        #print(mut_list)
+                        mut_nt_list = []
+                        
+                        out_list = []
+                        
+                        for mutation in mut_list:
+                          
+                            mut_pos = int(mutation.split('|')[1])
+                            
+                            if mut_pos >= (codon_start*3) and mut_pos <= ((codon_start*3)+(n_aa*3)):
+                            
+                                mut_nt_list.append(codon_groups[mut_pos])
+                                
+                            else:
+                                out_list.append(mut_pos)
+                                
+                        if len(set(mut_nt_list)) == 1:
+                            #print(mut_list, var_count)
+                            valid_seq+=var_count
+                            
+                            codon = int(list(set(mut_nt_list))[0])
+                            
+                            wt_seq = wt_codons[codon]
+                            
+                            new_seq = [x for x in wt_seq]
+                            
+                            for mutation in mut_list:
+                                mut_pos = int(mutation.split('|')[1])
+                                mutation = mutation.split('|')[2]
+                                
+                                codon_pos = (mut_pos-1)%3
+                                
+                                new_seq[codon_pos] = mutation
+                                
+                            new_codon = ''.join(new_seq)
+                            
+                            #print(wt_seq, mut_list, new_codon)
+                            
+                            if new_codon in list(var_dict_of_dicts[Sample_ID][codon].keys()):
+                                
+                                
+                                var_dict_of_dicts[Sample_ID][codon][new_codon]+=var_count
+                                
+                                
+                            else:
+                                var_dict_of_dicts[Sample_ID][codon][new_codon]=var_count
+                                
+                            
+              
+              
+        wt_count_dict[Sample_ID] = wt_count    
+        print(Sample_ID)
+    return var_dict_of_dicts[Sample_ID], wt_count
+
+```
+
+
+```{python, Chunk 18 : Obtain count of each variant}
+
+var_dict_of_dicts = {}
+wt_count_dict = {}
+
+
+#mutation_set = dict of dict per library
+#ref_seq= Sequence that is mutated (key in amplicon dictionary)
+#codon_start
+#n_aa = Number of amino acids in sequence which is coded for 
+#def get_variant_count_1(mutation_set, ref_seq, codon_start, n_aa):
+get_variant_count(dict_of_mut_dicts, 'Pbs2', 1, 56)
+```
+
+
+```{python, Chunk 19 : Convert Variant count dict to df}
+
+if not os.path.exists("variant_counts/"):
+    os.makedirs("variant_counts/")
+
+#Transform dicts of dicts into dict of dataframes, then save dataframes as csv files
+df_dict = {}
+for i in list(sample_sheet.index):
+  
+    variant_file = f'variant_counts/library{i}.csv'
+    sample_sheet.loc[i, "variant_file"]=variant_file
+    df_dict[i] = pd.DataFrame(var_dict_of_dicts[i]) 
+    df_dict[i].to_csv(variant_file, sep = ',')
+ 
+#Transform WT count dictionary to dataframe, then save as csv file     
+wt_count_df = pd.DataFrame.from_dict(wt_count_dict, columns=["wt_count"], orient = 'index')
+wt_count_df.to_csv('./variant_counts/wt_counts.csv', sep=',')
+```
+
+```{python, Chunk 20 : Fill and save sample sheet }
+
+for i in list(sample_sheet.index):
+    sample_sheet.loc[i, "wt_reads"] = wt_count_df.loc[i, "wt_count"]
+    sample_sheet.loc[i, "variant_reads"]=df_dict[i].fillna(0).sum().sum()
+del(i)    
+sample_sheet["final_reads"]= sample_sheet["wt_reads"] + sample_sheet["variant_reads"]
+
+sample_sheet.to_csv(filled_sample_sheet, index=True)
+
+
+```
+
+
