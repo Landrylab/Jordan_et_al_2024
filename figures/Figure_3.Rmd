@@ -1,0 +1,174 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r, load_libraries}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(ggpubr)
+library(stringr)
+library(ggExtra)
+library(colorBlindness)
+library(cowplot)
+library(ggrepel)
+
+
+motif_colour<-"skyblue2"
+flanking_colour<-"#0056B1"
+
+
+non_syn_colour<- motif_colour 
+stop_colour<-"#D81B60"
+syn_colour<-"#ffc107"
+wt_colour<-"#004D40"
+
+theme_figure_3<-function(textsize=10){
+  theme(axis.text = element_text(size = textsize, colour="black"),
+        axis.title = element_text(size=textsize),
+        legend.title = element_text(size=textsize-3),
+        legend.text = element_text(size=textsize-3),
+        text = element_text(colour = "black"),
+        axis.ticks = element_line(colour="black"))
+}
+
+
+```
+
+
+```{r}
+a_file<-cartoon_file<-"../Data/images/fig3_panel_a.png"
+
+panel_a<-ggdraw()+draw_image(a_file, scale=1.25)
+
+panel_a
+
+```
+
+
+```{r}
+
+b_data<-read.csv("../Data/Solid_PCA/results/solid_pca_results.csv")
+
+
+b_data<-b_data%>%
+  filter(!is.na(mutation_sig))%>%
+  mutate(direction_change=case_when(log2FC_PCA_score>0 ~ "Loss",
+                                    log2FC_PCA_score<0 ~ "Gain"))
+
+
+#Panel b
+panel_b<-b_data%>%
+  select(mutation, direction_change)%>%
+  group_by(mutation)%>%
+  count(direction_change)%>%
+  mutate(n=case_when(direction_change == "Gain" ~ n,
+                     direction_change == "Loss" ~-n))%>%
+  ggplot(aes(x=n, y=mutation, fill=direction_change))+
+  geom_col(position = "identity", colour="black")+
+  geom_vline(xintercept=0)+
+  geom_label(aes(label=mutation, y=mutation, x=0), fill="white", size=2, fontface="bold",label.padding = unit(0.15, "lines"))+
+  scale_y_discrete(limits=rev(c("K85W", "I87W", "S83F", "Q82W", "P97A", "L98F", "N92H", "N92S")), name="")+
+  scale_x_continuous(breaks=-4:4, limits=c(-4,4), labels = c(4,3,2,1,0,1,2,3,4))+#
+  scale_fill_manual(values=c("#93d48b", "#f75866"), guide="none")+
+  theme_bw()+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.y = element_blank())+
+  labs(x="Interactions gained or lost")+
+  theme_figure_3()
+
+
+panel_b
+
+```
+
+
+
+```{r, panel 3C}
+c_specificity_data<-read.csv("../Data/Solid_PCA/results/solid_pca_results.csv")%>%
+  filter(p.adj.signif != "ns")%>%
+  mutate(effect=if_else(log2FC_PCA_score >0, "Less specific", "More specific"))
+
+
+c_validation_dms_data<-read.csv("../Data/DMS/results/aa_validation_scores.csv")%>%
+  filter(condition == "MTX" & interactor == "Sho1" & sorbitol ==1)%>%
+  rename(mutation=mutant)%>%
+  select(position, aa, mutation, median_log2FC)
+  
+
+c_interaction_preliminary_dms_data<-read.csv("../Data/DMS/results/aa_surrounding_region_DMS_scores.csv")%>%
+  filter(condition == "MTX" & interactor == "Sho1" & sorbitol ==1)%>%
+  filter(position  == 82 & aa == "W" | position == 83 & aa == "F")%>%  #Missing from validation
+  select(position, aa, median_log2FC)
+  
+
+c_interaction_data<-bind_rows(c_validation_dms_data, c_interaction_preliminary_dms_data)
+
+c_interaction_data[c_interaction_data$position == 82 &
+                   c_interaction_data$aa == "W","mutation"]<-"Q82W"
+c_interaction_data[c_interaction_data$position == 83 &
+                  c_interaction_data$aa == "F","mutation"]<-"S83F"
+
+c_data<-left_join(c_specificity_data, c_interaction_data, by=c("mutation"))
+
+
+
+panel_c<-c_data%>%
+  ggplot(aes(x=log2FC_PCA_score, y=median_log2FC))+
+  geom_vline(xintercept = 0, linetype="dashed", colour="grey50")+
+  geom_point(aes(group=interaction(mutation, partner), fill=mutation), shape=21)+
+  geom_text_repel(aes(label=partner, colour=mutation), size=2, force = 1, min.segment.length = 0.25, max.time=10, box.padding=0.1, point.padding = 0.1, max.overlaps=100)+
+  stat_cor(method="spearman", cor.coef.name = "rho", show.legend=F, label.y.npc = 0.5, size=4, colour="black")+
+  annotate("text", label="Off-target\ninteractions lost", x=-0.040, y=4, fontface="bold", size=2.5, hjust=1)+
+  annotate("text", label="Off-target\ninteractions gained", x=0.040, y=4, fontface="bold", size=2.5, hjust=0)+
+  theme_classic()+
+  theme_figure_3()+
+  theme(legend.background =element_rect(colour="black"),
+        legend.box.margin = margin(l=0.2, unit="cm"),
+        legend.key.size = unit(0.4, unit="cm"))+
+  scale_y_continuous(expand=expansion(mult = c(0.05, 0.065)))+
+  scale_x_continuous(expand=expansion(mult=c(0.05, 0.16)))+
+  scale_fill_brewer(palette = "Dark2", limits=c("K85W", "I87W", "S83F", "Q82W", "P97A", "L98F", "N92H", "N92S"))+
+  scale_colour_brewer(palette="Dark2", guide="none", limits=c("K85W", "I87W", "S83F", "Q82W", "P97A", "L98F", "N92H", "N92S"))+
+  labs(y="Sho1-Pbs2\nInteraction score",
+       x="Log2FC interaction score compared to WT Pbs2",
+       fill="Mutation")
+
+
+panel_c
+
+
+```
+
+
+
+```{r}
+
+#Assemble panels
+
+
+
+top_row<-plot_grid(panel_a, 
+                   panel_b,
+                   nrow=1, ncol=2, 
+                   labels=c("a", "b"), label_size = 15,
+                   rel_widths = c(1.6,1),
+                   align = "h",
+                   axis="tb")
+
+top_row
+
+
+figure3<-plot_grid(top_row, panel_c, nrow=2, ncol=1, rel_heights = c(1,1.25), labels = c("", "c"))+
+  theme(panel.background = element_rect(fill="white", colour="white"))
+
+
+save_plot("./fig_3.svg", figure3, dpi=400, base_width = 7)
+
+
+
+```
+
