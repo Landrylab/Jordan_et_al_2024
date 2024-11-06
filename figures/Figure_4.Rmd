@@ -1,0 +1,150 @@
+
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+
+
+theme_figure_4<-function(textsize=7){
+  theme(axis.text = element_text(size = textsize, colour="black"),
+        axis.title = element_text(size=textsize+5),
+        legend.title = element_text(size=textsize+2),
+        legend.text = element_text(size=textsize),
+        text = element_text(colour = "black"))
+}
+
+
+wt_colour<-"#004D40"
+
+```
+
+
+
+```{r}
+####Panel A - Boxplot####
+
+a_data<-read.csv("../../Data/Solid_PCA/results/solid_pca_results.csv")
+
+
+panel_a<-a_data%>%
+  filter(condition == "MTX")%>%
+  filter(partner %in% c("ABP1", "BEM1", "NBP2", "SHO1"))%>%
+  ggplot(aes(x=partner, y=mednorm, fill=mutation))+
+  geom_boxplot(outlier.shape=NA)+
+  geom_point(position=position_jitterdodge(jitter.width=0.25), shape=21, show.legend = F)+
+  scale_x_discrete(labels=c("Abp1", "Bem1", "Nbp2", "Sho1"))+
+  scale_fill_discrete(labels=c("Stuffed", "WT"), type=c("white", wt_colour))+
+  theme_bw()+
+  theme_figure_4(textsize = 20)+
+  labs(fill="Pbs2 variant",
+       y="Normalized\ninteraction score",
+       x=NULL)
+panel_a
+```
+
+```{r}
+
+
+data_b<-read.csv("../../Data/SH3_alignments/rmsd_data.csv")
+
+
+#Make subplot with rmsd heatmap
+panel_b<-data_b%>%
+  dplyr::filter((structure1=="Sho1" & structure2 == "Sho1") | #All this filtering keeps
+         (structure1=="Sho1" & structure2 == "Abp1") | #only the bottom half of 
+         (structure1=="Sho1" & structure2 == "Nbp2") | #the heatmap, instead of
+         (structure1=="Sho1" & structure2 == "Bem1") | #a square and symetrical 
+         (structure1=="Abp1" & structure2 == "Abp1") | #heatmap
+         (structure1=="Abp1" & structure2 == "Nbp2") |
+         (structure1=="Abp1" & structure2 == "Bem1") |
+         (structure1=="Nbp2" & structure2 == "Nbp2") |
+         (structure1=="Nbp2" & structure2 == "Bem1") |
+         (structure1=="Bem1" & structure2 == "Bem1"))%>%
+  ggplot(aes(x=structure1, y=structure2, fill=RMSD))+
+  geom_tile(colour="black")+
+  geom_text(aes(label=RMSD), colour="black", size=5)+
+  scale_fill_gradient(low="white", high="red2") +
+  scale_x_discrete(limits=c("Sho1", "Abp1", "Nbp2", "Bem1"), expand = c(0,0))+
+  scale_y_discrete(limits=rev(c("Sho1", "Abp1", "Nbp2", "Bem1")), expand = c(0,0))+
+  annotate(geom="text", label="RMSD (Å)", x=3.3, y=4, size=12)+
+  theme_classic()+
+  theme(legend.position="none",
+        axis.text = element_text(colour="black", size=15),
+        axis.line = element_blank(),
+        aspect.ratio = 1,
+        axis.ticks = element_blank(),
+        plot.title = element_text(hjust=0.5))+
+  labs(x=NULL, y=NULL, title=NULL ) #title="RMSD (Å)"
+
+panel_b
+
+
+```
+
+
+
+
+```{r}
+####Panel C - motif alignment####
+
+
+
+
+c_data<-data.frame(Standard_numbering=c(-14:7),
+                    Ste20=c("S","S","S","A","N","G","K","F","I","P","S","R","P","A","P","K","P","P","S","S","A", NA),
+                     Ark1=c(NA ,NA ,NA ,NA ,"K","P","K","L","H","S","P","K","P","P","P","T","P","K","T","K","K","A"),
+                     Pbs2=c("Q","S","P","K","H","I","Q","Q","I","V","N","K","P","L","P","P","L","P","V","A","G","S"),
+                    Pbs2_position=c(82:103))
+
+contacts<-data.frame(x=c(1,2,4,6,7,8,9,10,11,14,16), y=rep(1,11))
+
+panel_c<-ggplot(data=c_data, aes(x=Standard_numbering))+
+  geom_text(aes(label=Ste20), y=1, size=8)+
+  geom_text(aes(label=Ark1), y=2, size=8)+
+  geom_text(aes(label=Pbs2), y=3, size=8)+
+  geom_text(aes(label=Pbs2_position), y=0, size=8)+
+  geom_text(aes(label=Standard_numbering), y=4, size=8)+
+  geom_hline(yintercept=c(0.5, 3.5))+ #1.5, 2.5
+  geom_vline(xintercept=c(-3.5, 3.5), linetype="dashed")+
+  scale_y_continuous(labels=c("Pbs2 position", "Ste20", "Ark1", "Pbs2", "Standard numbering"), limits=c(-0.2,4.1), breaks=c(0,1,2,3,4))+
+  theme_minimal()+
+  theme(aspect.ratio = 0.2,
+        axis.text.x = element_blank(),
+        panel.grid = element_blank(),
+        axis.text.y=element_text(colour="black", size=20),
+        panel.border = element_rect(fill=NA, colour="black"),
+        plot.title = element_text(hjust=0.67, face = "plain", size=20))+
+  labs(x=NULL,
+       title = "Canonical motif")
+
+panel_c
+
+```
+
+
+
+```{r}
+####ASSEMBLY####
+
+
+
+upper<-plot_grid(panel_a,
+                panel_b,
+                nrow=1, ncol=2,
+                labels="auto",
+                # rel_heights = c(0.4,1,0.3),
+                label_size = 30)
+
+fig4<-plot_grid(upper,
+                panel_c,
+                nrow=2, ncol=1,
+                labels=c("", "c"), label_size = 30)
+
+
+# fig4
+
+save_plot(filename = "../Data/images/Fig4/fig4.png", plot=fig4, bg="white", base_height = 8, base_width = 16)
+
+```
+

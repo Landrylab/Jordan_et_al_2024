@@ -1,0 +1,163 @@
+
+```{r, Load libraries}
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(rstatix)
+library(colorBlindness) #To make sure plots are colourblind safe
+library(cowplot)
+library(ggpubr)
+library(stringr)
+library(ggExtra)
+library(ggrepel)
+library(magick)
+
+motif_colour<-"skyblue2"
+flanking_colour<-"#0056B1"
+
+theme_figure_1<-function(textsize=10){
+  theme(axis.text = element_text(size = textsize, colour="black"),
+        axis.title = element_text(size=textsize+5),
+        legend.text = element_text(size=textsize+2),
+        legend.title = element_text(size=textsize+5))
+}
+
+
+
+non_syn_colour<- motif_colour  
+stop_colour<-"#D81B60"
+syn_colour<-"#ffc107"
+wt_colour<-"#004D40"
+
+hog1_colour<-"#e69ba8"
+sho1_colour<-"#028b5b"
+
+```
+
+```{r, Panel_a}
+# panel a alternative with hog1 score
+
+a_data<-read.csv("../Data/DMS/results/aa_surrounding_region_DMS_scores.csv")%>%
+  filter(condition == "MTX" & sorbitol == 1 & interactor %in% c("Sho1", "Hog1") )%>%
+  mutate(position = as.factor(position))%>%
+  mutate(location=case_when(position %in% 85:99 ~ "motif",
+                            TRUE ~ "flanking"))%>%
+  mutate(identity=case_when(interactor == "Hog1" ~ "Hog1",
+                            TRUE ~ location))
+  
+pbs2_seq<-read.csv("../Data/DMS/reference/Pbs2_wt_seq.csv")%>%
+  mutate(position = as.factor(position+70))%>%
+  unite("aa_name", aa, position, sep="", remove = F)
+
+
+#Boxplot of effect per position
+panel_a<-a_data%>%
+  filter(type == "Non-Syn")%>%
+ggplot(aes(x=position, y=median_log2FC))+
+  geom_rect(ymin=-Inf, ymax=Inf, xmin=14.5, xmax=29.5, fill=motif_colour)+
+  geom_boxplot(aes(fill=interactor), outlier.size = 0.8, outlier.shape = 21)+
+  scale_fill_manual(values = c(sho1_colour, hog1_colour), limits= c("Sho1", "Hog1"),labels=c("Sho1", "Hog1"))+
+  geom_text(data = filter(pbs2_seq, !position %in% 93:99), y=0.675, aes(label=aa), size=5)+
+  geom_text(data = filter(pbs2_seq, position %in% 93:99), y=0.675, aes(label=aa), size=5, fontface="bold")+
+  scale_y_continuous(expand = expansion(mult =c(0.05, 0.1)))+
+  scale_x_discrete(breaks=seq(from=71, to=126, by=2))+
+  theme_classic()+
+  theme_figure_1(textsize=15)+
+  theme(legend.position = c(0.1, 0.25))+
+  labs(y="Interaction score",
+       x="Residue in Pbs2",
+       fill="Interaction")
+
+panel_a
+
+
+
+```
+
+```{r, Panel_b}
+
+structure<-"../Data/images/Fig2/fig2_panel_b.png"
+
+panel_b<-ggdraw()+draw_image(structure, scale=1)
+  
+panel_b
+
+```
+
+
+```{r, Panel C}
+
+c_data<-read.csv("../Data/DMS/results/aa_extended_motif_DMS_scores.csv")%>%
+  filter(condition == "MTX" & sorbitol == 1 & interactor == "Sho1")%>%
+  mutate(type_grouped=case_when(type == "STOP" ~ "PTC",
+                                type == "Non-Syn" ~ "Non-Syn",
+                                type == "WT" | type == "Syn" ~ "WT or syn"))
+
+
+
+c_data_mod<-c_data%>%
+  mutate(sig_summary=case_when(type_grouped == "Non-Syn" & p.signif_log2FC != "ns" & median_log2FC > 0 ~ "sig_stronger",
+                               type_grouped == "Non-Syn" & p.signif_log2FC != "ns" & median_log2FC < 0 ~ "sig_weaker",
+                               type_grouped == "Non-Syn" & p.signif_log2FC == "ns"  ~ "non_sig",
+                               type_grouped == "PTC" ~ "PTC",
+                               type_grouped == "WT or syn" ~ "WT or syn"
+                                 ))
+  
+
+
+panel_c<-c_data_mod%>%
+  ggplot(aes(x=median_log2FC, y=sig_summary))+
+  geom_boxplot(aes(fill=type_grouped), outlier.shape = NA)+
+  geom_point(shape=21, aes(fill=type_grouped), position = position_jitter(height = 0.3), show.legend=F)+
+  scale_fill_manual(values = c(non_syn_colour, stop_colour, syn_colour), labels=c("Missense", "Nonsense", "WT or silent"))+
+  scale_y_discrete(limits=c("sig_stronger", "non_sig", "WT or syn", "sig_weaker", "PTC"), 
+                   labels=c("Significantly stronger ", 
+                            "Not significantly\ndifferent ", 
+                            "Wild-type or silent\n(Not tested)",
+                            "Significantly weaker ",
+                            "Nonsense\n(Not tested)"))+
+  annotate(geom="text", x=-0.42, y=4.5, label="62.7% of missense mutants", colour=motif_colour, fontface="bold")+
+  annotate(geom="text", x=0.061, y=0.55, label="6.5% of missense mutants", colour=motif_colour, fontface="bold")+
+  theme_classic()+
+  labs(x="Sho1-Pbs2 Interaction score\n(Extended motif)",
+       y="Result of Mann-Whitney U test",
+       fill="Mutation type")+
+  theme_figure_1()+
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.25, 0.25))
+
+panel_c
+
+```
+
+
+
+```{r, Bring togther}
+
+
+bottom_row<-plot_grid(panel_b, 
+                      panel_c, #+theme(axis.text = element_text(size=15))
+                      labels=c("b","c"), 
+                      label_size = 20, label_x = c(0,-0.05),
+                      scale=c(1, 1))
+
+# bottom_row
+fig2<-plot_grid(panel_a+theme(axis.text.x = element_text(size=15)), 
+                bottom_row, 
+                labels = c("a", ""), 
+                ncol = 1, label_size=20)
+
+# fig2
+
+
+
+save_plot(filename = "../Data/images/Fig2/fig2.svg", plot=fig2, ncol=2, nrow=2, bg="white")
+
+
+
+```
+
+
+
+
+
