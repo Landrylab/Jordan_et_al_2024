@@ -1,0 +1,291 @@
+
+```{r, libraries}
+####CHUNK 1 : PACKAGES AND DATA ####
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(stringr)
+library(ggrepel)
+
+#Optical densities measured by plate readers
+dmso_in<-"../../Data/growthcurves/pbs2_muts_growthcurves_dmso.xlsx" 
+mtx_in<-"../../Data/growthcurves/pbs2_muts_growthcurves_mtx.xlsx"
+#Results from other experiments
+surrounding_region_DMS_path<-"../../Data/DMS/results/aa_surrounding_region_DMS_scores.csv"
+extended_motif_DMS_path<-"../../Data/DMS/results/aa_extended_motif_DMS_scores.csv"
+#Output
+out<-"../../Data/growthcurves/results_validation_growth_curves.csv"
+
+
+```
+
+
+
+```{r, warning=FALSE}
+
+#### CHUNK 2 : IMPORT DATA ####
+
+
+#Load the data of mutants grown in DMSO (control)
+dmso_gc<-readxl::read_xlsx(dmso_in)%>%
+  filter(condition %in% c("Sorbitol", "None"))%>%
+  mutate(column=as.numeric(column))%>%
+  mutate(position=as.numeric(str_replace_all(mutation, "[:alpha:]", ""))+70)%>% #Change numbering of positions to match position in PBS2
+  mutate(orig_aa=str_sub(mutation, end=1),
+         mut_aa=str_sub(mutation, start=-1))%>%
+  mutate(mutation= case_when(mutation == "P24A+P27A" ~ "P94A+P97A",
+                             mutation == "blank" ~ "blank",
+                             TRUE ~ paste0(orig_aa, position, mut_aa)))%>%
+  select(-c(position, orig_aa, mut_aa))
+                            
+                    
+
+
+#Load the data of mutants grown in MTX (measure interaction)
+mtx_gc<-readxl::read_xlsx(mtx_in)%>%
+  filter(condition %in% c("Sorbitol", "None"))%>%
+  mutate(column=as.numeric(column))%>%
+  mutate(position=as.numeric(str_replace_all(mutation, "[:alpha:]", ""))+70)%>% #Change numbering of positions to match Pbs2 position
+  mutate(orig_aa=str_sub(mutation, end=1),
+         mut_aa=str_sub(mutation, start=-1))%>%
+  mutate(mutation= case_when(mutation == "P24A+P27A" ~ "P94A+P97A",
+                             mutation == "blank" ~ "blank",
+                             TRUE ~ paste0(orig_aa, position, mut_aa)))%>%
+  select(-c(position, orig_aa, mut_aa))
+
+
+```
+
+```{r}
+####CHUNK 3 : VISUALIZE GROWTH CURVES #### 
+
+
+
+#Growth in only DMSO (control)
+#individual wells
+dmso_gc%>%
+  pivot_longer(cols = -c(1:5), names_to = "time", values_to = "abs")%>% 
+  mutate(time=as.numeric(time)/3600)%>%
+  ggplot(aes(x=time, y=abs))+
+  geom_line(aes(colour=mutation))+
+  facet_grid(rows=vars(row), cols = vars(column))+
+  theme_bw()+
+  ggtitle("Growth in DMSO (control)")
+
+#Growth in only DMSO (measuring fitness)
+#Comparing interactions
+dmso_gc%>%
+  pivot_longer(cols = -c(1:5), names_to = "time", values_to = "abs")%>%
+  mutate(time=as.numeric(time)/3600, column=as.numeric(column))%>%
+  ggplot(aes(x=time, y=abs))+
+  geom_line(aes(colour=condition, group=well), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=condition))+
+  facet_wrap(~mutation)+
+  theme_bw()+
+  ggtitle("Growth in DMSO (control)")
+
+
+
+#Growth in MTX (measuring interaction)
+#individual wells
+mtx_gc%>%
+  pivot_longer(cols = -c(1:5), names_to = "time", values_to = "abs")%>% 
+  mutate(time=as.numeric(time)/3600)%>%
+  ggplot(aes(x=time, y=abs))+
+  geom_line(aes(colour=mutation))+
+  facet_grid(rows=vars(row), cols = vars(column))+
+  theme_bw()+
+  ggtitle("Growth in MTX (Interaction)")
+
+#Growth in MTX (measuring interaction)
+#Comparing interactions
+mtx_gc%>%
+  pivot_longer(cols = -c(1:5), names_to = "time", values_to = "abs")%>%
+  mutate(time=as.numeric(time)/3600, column=as.numeric(column))%>%
+  ggplot(aes(x=time, y=abs))+
+  geom_line(aes(colour=condition, group=well), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=condition))+
+  facet_wrap(~mutation)+
+  theme_bw()+
+  ggtitle("Growth in MTX (Interaction)")
+
+```
+
+```{r}
+
+#### CHUNK 4 : FILTERING WELLS ####
+
+#Remove growth curves which might be off. Most of these are probably from evaporation in the 384 well plate
+#They are not proper measurements, so I remove them from the analysis
+
+
+dmso_gc<-dmso_gc%>%
+  filter(!(well %in% c("E17", "F4", "O7", "P10"))) #Go up then down
+
+mtx_gc<-mtx_gc%>%
+  filter(!(well %in% c("A1", "G11")))#A1 goes down, and G11 has a spike
+
+
+```
+
+
+```{r}
+#### CHUNK 5 : CALCULATE INSTANTANEOUS GROWTH RATE####
+
+
+#This function takes a dataframe, with one well per row. 
+#The first columns are the identifying info for the well, and the rest 
+#are the absorbances at different timepoints. It calculates the maximal 
+#growth rate (largest difference between two timepoints) for each well
+
+growthrate<-function(dataframe, ident_cols){
+  absorbances<-select(dataframe, -(all_of(ident_cols))) #Separate the absorbance values from the identifying info
+  identifiers<-select(dataframe, all_of(ident_cols))
+  
+  diff<-select(dataframe) #Empty dataframe with the right amount of rows
+  for (i in 1:(ncol(absorbances)-1)){ #For each column (timepoint) but the last
+    col<-(absorbances[,i+1]-absorbances[,i])*4 #Take the absorbance after minus this absorbance, and multiply X4 (to get per hour growth rate instead of 15min) 
+    diff<-cbind(diff, col) #Add all the differences into one dataframe
+  }
+  
+  sorted_diff<-t(apply(diff, 1, function(x) x[order(x)]))%>% #Take each row and sort so that the largest increase is in the rightmost column
+    as.data.frame()
+  
+
+  
+#Take maximal growth rate as median of top 5
+ sorted_diff<-sorted_diff%>%
+    select((ncol(.)):(ncol(.)-5))%>%  #Take 5 largest values
+    rowwise()%>% #Calculate across rows
+    mutate(growth_rate=median(c_across(1:5)))%>% #Calculate median of 5 biggest growth rates
+    select(growth_rate) #Keep only median
+
+
+  
+  gr<-cbind(identifiers, sorted_diff) #Add back the identifiers for each row
+ 
+   return(gr)
+}
+
+#Run growth rate calculating function on all data sets
+dmso_gr<-growthrate(dmso_gc, c("well", "column", "row", "mutation", "condition"))
+mtx_gr<-growthrate(mtx_gc, c("well", "column", "row", "mutation", "condition"))
+
+
+#Visualize growth in MTX (interaction measuring) media
+mtx_gr%>%
+  ggplot(aes(x=mutation, y=growth_rate, colour=mutation))+
+  geom_point(position = position_jitter(width=0.25))+
+  facet_wrap(~condition)+
+  scale_colour_discrete(guide="none")+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))+
+  labs(title="Growth rate in MTX")
+
+#Visualize growth in DMSO (control) media
+dmso_gr%>%
+  ggplot(aes(x=mutation, y=growth_rate, colour=mutation))+
+  geom_point(position = position_jitter(width=0.25))+
+  facet_wrap(~condition)+
+  scale_colour_discrete(guide="none")+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))+
+  labs(title="Growth rate in DMSO (control")
+
+
+
+#P94R is  lower in DMSO with and without sorbitol, so that means MTX results are probably affected
+
+
+  
+```
+
+
+```{r}
+####CHUNK 6 : COMBINE CONDITIONS####  
+
+#Combine MTX and DMSO conditions into one data frame. 
+ combined_gr<-full_join(mtx_gr, dmso_gr, by=c("well", "column", "row", "mutation", "condition"))%>%
+   rename(mtx_gr=growth_rate.x, dmso_gr=growth_rate.y)
+ 
+#Check for outliers once more. P94R is clearly an outlier, but the rest seem good 
+ combined_gr%>%
+   filter(mutation != "blank")%>%
+   ggplot(aes(x=mtx_gr, y=dmso_gr))+
+   geom_point(aes(group=mutation))+
+   facet_wrap(~condition)+
+   geom_text_repel(data=combined_gr%>%filter(mutation == "P94R"), aes(label=mutation))
+ 
+ #Remove P94R. Low growth in DMSO, so not due to interaction. Probably some problem with 
+ #the mutant reconstructed
+ combined_gr<-combined_gr%>%
+   filter(mutation != "blank")%>%
+   filter(mutation != "P94R")
+```
+
+```{r}
+#### CHUNK 7 : COMPARE WITH DMS SCORES ####
+
+
+# DMS data from the first DMS screen, larger region
+prelim_dms_data<-read.csv(surrounding_region_DMS_path)%>%
+  filter(condition == "MTX" &  interactor == "Sho1")%>%
+  select(median_log2FC, sd_log2FC, position, aa, sorbitol)%>%
+  mutate(screen="Full region")
+
+
+#DMS data from second DMS screen on extended motif
+motif_dms_data<-read.csv(extended_motif_DMS_path)%>%
+  filter(condition == "MTX" &  interactor == "Sho1")%>%
+  select(median_log2FC, sd_log2FC, position, aa, sorbitol)%>%
+  mutate(screen="Extended motif-only")
+
+#combine DMS data
+dms_data<-rbind(prelim_dms_data, motif_dms_data)
+
+#Prepare growth curve data frame for joining withDMS data
+compare<-combined_gr%>%
+  filter(mutation != "P94A+P97A")%>% #Not in DMS data, as it is a double mutant
+  group_by(mutation, condition)%>%
+  summarize(median_mtx_gr=median(mtx_gr, na.rm=T),
+            sd_mtx_gr=sd(mtx_gr, na.rm=T),
+            median_dmso_gr=median(dmso_gr, na.rm=T),
+            sd_dmso_gr=sd(dmso_gr, na.rm=T))%>%
+  ungroup%>%
+  mutate(sorbitol=case_when(condition == "Sorbitol" ~ 1,
+                            TRUE ~ 0))%>%
+mutate(position=as.numeric(str_replace_all(mutation, "[:alpha:]", "")),
+       aa=str_sub(mutation, start=-1))
+
+#Combine DMS data and growth curve data
+compare<-left_join(compare, dms_data, by=c("position", "aa", "sorbitol"))%>%
+  drop_na("screen")
+
+
+#Validation of fitness effects
+p<-compare%>%
+  mutate(sorbitol=as.character(sorbitol))%>%
+  ggplot(aes(x=median_log2FC, y=median_mtx_gr, colour=sorbitol))+
+    geom_point(aes(group=mutation))+
+    scale_colour_viridis_d(option="plasma", labels=c("None", "1 M"), begin=0.25, end=0.75)+
+    stat_cor(method="spearman", cor.coef.name = "rho", show.legend=F)+
+  facet_wrap(~screen)+
+    theme_classic()+
+    labs(title="Validation of PCA results through growth curves",
+       x="Interaction score (DHFR-PCA results)",
+       y="Growth rate (Growth curves)",
+       colour="Sorbitol")
+p
+
+
+
+
+```
+
+```{r}
+#### CHUNK 8 : EXPORT GROWTH RATES ####
+
+write.csv(combined_gr, file=out, row.names = F)
+
+
+```
