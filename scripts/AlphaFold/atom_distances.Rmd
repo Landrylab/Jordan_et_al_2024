@@ -1,0 +1,64 @@
+
+```{r}
+library(bio3d)
+library(dplyr)
+library(tidyr)
+library(tibble)
+```
+
+```{r}
+####CHUNK 1: UPLOAD FILE####
+
+#Path to pdb file. Change this depending on what you want to measure
+
+#Path to pdb structure
+path_to_pdb<-"../../Data/AlphaFold_predictions/alphafold_output/I87W.pdb"
+```
+
+
+```{r}
+####CHUNK 2: PREPARE STRUCTURE####
+
+#Read pdb structure using bio3d package
+structure<-read.pdb(path_to_pdb)
+
+
+#Get identifiers for each residue
+chain_id<-structure[["atom"]]%>%
+  slice_head(by=c("resno", "chain"))%>%
+  dplyr::select(chain, resno, resid)%>%
+  tidyr::unite("name", chain, resno, resid, sep="_", remove=F)
+
+#Compute distance between each residue pair using bio3d
+distance_matrix<-bio3d::dm.pdb(structure, grp=T)%>%
+  matrix(., nrow=423, ncol=423)%>%
+  as.data.frame(row.names = chain_id$name)
+                 
+colnames(distance_matrix)<-chain_id$name
+
+#pivot dataframe
+long_values<-distance_matrix%>%
+  tibble::rownames_to_column(var="res1")%>%
+  pivot_longer(cols=-1, names_to = "res2", values_to = "distance")%>%
+  tidyr::drop_na(distance)
+
+
+```
+
+
+```{r}
+
+####CHUNK 3: SELECT POSITIONS####
+
+
+#Here set filtering parameters to look at certain residues only
+position_id<-chain_id%>%
+  filter(chain == "B" & resno == 17)%>%
+  pull(name)
+
+#Distances of selected residues only
+sel_values<-long_values%>%
+  filter(res1 %in% position_id | res2 %in% position_id)%>%
+  arrange(distance)
+```
+
