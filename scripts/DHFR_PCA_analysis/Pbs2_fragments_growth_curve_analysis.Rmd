@@ -1,0 +1,391 @@
+
+```{r, libraries}
+####CHUNK 1 : PACKAGES AND DATA ####
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(rstatix)
+library(ggpubr)
+
+#Optical densities measured by plate readers
+dmso_in_non_LP<- "../../Data/growthcurves/pbs2_fragments/20250303_Pbs2_fragments_DMSO.xlsx"
+mtx_in_non_LP<-"../../Data/growthcurves/pbs2_fragments/20250303_Pbs2_fragments_MTX.xlsx" 
+dmso_in_LP<-"../../Data/growthcurves/pbs2_fragments/20250324_Pbs2_fragments_landing_pad_DMSO.xlsx"
+mtx_in_LP<-"../../Data/growthcurves/pbs2_fragments/20250324_Pbs2_fragments_landing_pad_MTX.xlsx"
+  
+  
+#Information about what is situated where in the plate
+info_non_LP<-readxl::read_xlsx("../../Data/growthcurves/pbs2_fragments/plate_plan.xlsx")%>%
+  tidyr::unite(col=Well, Row, Column, sep="", remove = F)
+
+
+info_LP<-readxl::read_xlsx("../../Data/growthcurves/pbs2_fragments/plate_plan_LP.xlsx")%>%
+  tidyr::unite(col=Well, Row, Column, sep="", remove = F)
+  
+info<-bind_rows(info_non_LP, info_LP)
+
+colnames(info)<-tolower(colnames(info))
+
+
+#Output
+out<-"../../Data/growthcurves/pbs2_fragments/results_Pbs2_fragments_growth_curves.csv"
+
+rm(info_LP, info_non_LP)
+```
+
+
+
+```{r, warning=FALSE}
+####CHUNK 2 : IMPORT DATA####
+
+dmso_gc_non_LP<-readxl::read_xlsx(dmso_in_non_LP, 
+                           range = "B29:CU318", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 2)
+
+
+mtx_gc_non_LP<-readxl::read_xlsx(mtx_in_non_LP, 
+                           range = "B28:CU317", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 1)
+
+
+
+
+dmso_gc_LP<-readxl::read_xlsx(dmso_in_LP, 
+                           range = "B27:CU316", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 4)
+
+
+mtx_gc_LP<-readxl::read_xlsx(mtx_in_LP, 
+                           range = "B26:CU315", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+ mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 3)
+
+gc<-bind_rows(mtx_gc_non_LP, dmso_gc_non_LP, mtx_gc_LP, dmso_gc_LP)%>%
+  right_join(info, ., by=c("well", "plate"))
+
+
+
+rm(dmso_gc_non_LP, mtx_gc_non_LP, dmso_gc_LP, mtx_gc_LP, info)
+```
+
+
+```{r}
+#### CHUNK 3 : VISUALIZE GROWTH CURVES ####
+
+
+#View raw growth curves
+gc%>%
+  filter(plate==1)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(column))+
+  theme_bw()+
+  ggtitle("Plate 1 - MTX")
+
+gc%>%
+  filter(plate==2)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(column))+
+  theme_bw()+
+  ggtitle("Plate 2 - DMSO")
+
+gc%>%
+  filter(plate==3)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(column))+
+  theme_bw()+
+  ggtitle("Plate 3 - MTX")
+
+gc%>%
+  filter(plate==4)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(column))+
+  theme_bw()+
+  ggtitle("Plate 4 - DMSO")
+  
+
+#Visualize growth of same interactions
+  
+gc%>%
+  filter(selection=="DMSO")%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line(aes(colour=dhfr1.2, group=well), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=dhfr1.2))+
+  facet_grid(rows=vars(dhfr1.2), cols=vars(dhfr3))+
+  theme_bw()+
+  ggtitle("DMSO")
+
+
+gc%>%
+  filter(selection=="MTX")%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line(aes(colour=dhfr1.2, group=well), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=dhfr1.2))+
+  facet_grid(rows=vars(dhfr1.2), cols=vars(dhfr3))+
+  theme_bw()+
+  ggtitle("MTX")
+
+
+
+
+
+```
+
+
+```{r}
+
+#### CHUNK 4 : FILTERING WELLS #### 
+
+gc<-gc%>%
+  filter(well != "E1" | plate != 2)%>%  #Remove well with odd growth in DMSO
+  filter(well != "H6" | plate != 2)%>% #Remove empty well where something grew
+  filter(!(well %in% c("A12", "C9", "C10", "C11")) | plate != 3 ) #A12 was not diluted. C9-10-11 did not grow for some reason
+
+
+#remove empty wells
+gc<-gc%>%
+ filter(dhfr1.2 != "Empty") 
+
+
+#Cut off at 48 hours for analysis
+gc<-gc%>%
+  filter(time <= 48)
+
+```
+
+
+```{r}
+
+#### CHUNK 5 : CALCULATE AUC ####
+
+####Define growth curve analysis functions####
+
+#Function to calculate the area under the curve of a growth curve
+trapezoid_auc<-function(x, y){
+  if(!is.numeric(x)){
+    print("x must be a numeric vector")
+    }else if(!is.numeric(y)){
+      print("y must be a numeric vector")
+      }else{
+      h<-diff(x)
+      auc<-(sum(y[-1]) + sum(y[-length(y)])) * mean(h) / 2
+      return(auc)
+      }
+} 
+
+#Function to take one well at a time and calculate max growth rate and auc
+calc_growth_stats<-function(df, well_id_col, time_col, absorbance_values_col){
+  complete_df<-data.frame()
+  #Take only one well
+  for (i in unique(df[[well_id_col]])){
+    current_data<-df%>%
+      filter({.data[[well_id_col]]}==i)
+    
+    #Calculate max growth rate
+    max_v<-current_data%>%
+      pull(absorbance_values_col)%>%
+      diff(lag=5)%>%
+      sort(decreasing=T)%>%
+      quantile(0.98)%>%
+      as.data.frame()%>%
+      rename(v_max=".")
+    
+    #Calculate AUC
+    auc<-trapezoid_auc(x=pull(current_data, time_col), y=pull(current_data, absorbance_values_col))%>%
+        as.data.frame()%>%
+        rename(auc=".")
+    
+    #Calculate final absorbance
+    final_abs<-current_data%>%
+      filter(!!sym(time_col) == max(current_data[, time_col]))%>%
+      dplyr::select(all_of(absorbance_values_col))%>%
+      rename(final_abs = absorbance)
+    
+    id_info<-df%>%
+      filter({.data[[well_id_col]]}==i)%>%
+      dplyr::select(-c(all_of(time_col), all_of(absorbance_values_col)))%>%
+      distinct()
+    
+    current_data_completed<-bind_cols(id_info, max_v, auc, final_abs)
+    
+    complete_df<-bind_rows(complete_df, current_data_completed)
+    
+  }
+  
+  return(complete_df)
+  
+}
+
+
+```
+
+```{r}
+#### CHUNK 6 : COMPUTE AUC ####
+
+growth_stats<-gc%>%unite(., well_id, well, plate, remove=F)%>%
+  calc_growth_stats(., "well_id", "time", "absorbance")
+```
+
+
+```{r}
+
+#### CHUNK 7 : VISUALISATION BEFORE NORMALIZATION ####
+
+
+#View AUC after 48h by the Pbs2 fragment
+growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=dhfr1.2, y=log2(auc)))+
+  geom_jitter(aes(colour=dhfr3), width = 0.1)+
+  stat_summary(geom = "errorbar", fun="mean", fun.min="mean", fun.max="mean")+
+  facet_wrap(facets = vars(dhfr3), nrow=1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("Not normalized")
+
+
+#View AUC after 48h by the interaction partner
+growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=dhfr3, y=log2(auc)))+
+  geom_jitter(aes(colour=dhfr3), width = 0.1)+
+  stat_summary(geom = "errorbar", fun="mean", fun.min="mean", fun.max="mean")+
+  facet_wrap(facets = vars(dhfr1.2), nrow=1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("Not normalized")
+
+
+```
+
+
+```{r}
+
+#### CHUNK 8 : NORMALIZE ####
+
+
+#Get median value of DHFR F[1,2] strain with the empty plasmid 
+empty_medians<-growth_stats%>%
+  filter(dhfr3 == "None")%>%
+  group_by(dhfr1.2, selection)%>%
+  summarize(empty_auc=median(auc),
+            empty_vmax=median(v_max),
+            empty_final=median(final_abs))%>%
+  ungroup()
+
+#Normalize by background interaction noise
+norm_growth_stats<-growth_stats%>%
+  left_join(., empty_medians, by=c("dhfr1.2", "selection"))%>%
+  mutate(norm_auc=auc/empty_auc,
+         norm_vmax=v_max/empty_vmax,
+         norm_final=final_abs/empty_final)
+
+rm(empty_medians)
+
+```
+
+```{r}
+
+#### CHUNK 9 : VISUALIZE NORMALIZED GROWTH ####
+
+
+#View normalized AUC after 48h by the Pbs2 fragment
+norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=dhfr1.2, y=log2(norm_vmax)))+
+  geom_jitter(aes(colour=dhfr3, shape= as.factor(plate)), width = 0.1)+
+  stat_summary(geom = "errorbar", fun="mean", fun.min="mean", fun.max="mean")+
+  facet_wrap(facets = vars(dhfr3), nrow=1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("MTX - normalized")
+
+
+#View normalized AUC after 48h by the interaction partner
+norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=dhfr3, y=log2(norm_vmax)))+
+  geom_jitter(aes(colour=dhfr3, shape= as.factor(plate)), width = 0.1)+
+  stat_summary(geom = "errorbar", fun="mean", fun.min="mean", fun.max="mean")+
+  facet_wrap(facets = vars(dhfr1.2), nrow=1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("MTX - normalized")
+
+
+```
+
+
+```{r}
+
+#### CHUNK 10 : VISUALIZE ONLY LANDING PAD STRAINS ####
+
+#Which strains to view (controlled expression only)
+list_of_strains<-c("None", "Sho1(SH3)landingpad", "Nbp2(SH3)landingpad", "Abp1(SH3)landingpad", "YFP")
+
+t.test<-norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  filter(dhfr1.2 %in% list_of_strains)%>%
+  group_by(dhfr3)%>%
+  rstatix::pairwise_t_test(norm_vmax ~ dhfr1.2, p.adjust.method = "fdr", alternative="less", ref.group = "Sho1(SH3)landingpad")%>%
+  add_xy_position()
+
+
+#View by Pbs2 fragments
+norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  filter(dhfr1.2 %in% list_of_strains)%>%
+  ggplot(aes(x=dhfr1.2, y=norm_vmax))+
+  geom_boxplot(aes(fill=dhfr3))+
+  facet_wrap(facets = vars(dhfr3), nrow=1)+
+  # scale_x_discrete(limits=list_of_strains)+
+  stat_pvalue_manual(t.test, hide.ns = T)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("MTX - normalized - t-test")
+
+#View by interaction partner
+norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  filter(dhfr1.2 %in% list_of_strains)%>%
+  ggplot(aes(x=dhfr3, y=norm_vmax))+
+  geom_boxplot(aes(fill=dhfr3))+
+  geom_point()+
+  facet_wrap(facets = vars(dhfr1.2), nrow=1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("MTX - normalized")
+
+
+```
+
+```{r}
+####CHUNK 11: EXPORT ####
+
+write.csv(norm_growth_stats, file = out, row.names = F)
+```
+

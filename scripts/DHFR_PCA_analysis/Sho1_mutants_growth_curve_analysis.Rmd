@@ -1,0 +1,405 @@
+
+
+```{r, libraries}
+####CHUNK 1 : PACKAGES AND DATA ####
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(rstatix)
+
+#Optical densities measured by plate readers
+dmso_round1<-"../../Data/growthcurves/sho1_mutants/20250413_Sho1_mutants_1_10_DMSO.xlsx" 
+mtx_round1<-"../../Data/growthcurves/sho1_mutants/20250413_Sho1_mutants_1_10_MTX.xlsx"
+dmso_round2<-"../../Data/growthcurves/sho1_mutants/20250416_Sho1_mutants_11_18_DMSO.xlsx"
+mtx_round2<-"../../Data/growthcurves/sho1_mutants/20250416_Sho1_mutants_11_18_MTX.xlsx"
+  
+  
+#Information about what is situated where in the plate
+info_round1<-readxl::read_xlsx("../../Data/growthcurves/sho1_mutants/plate_plan.xlsx", sheet=1)%>%
+  tidyr::unite(col=well, row, col, sep="", remove = F)
+
+info_round2<-readxl::read_xlsx("../../Data/growthcurves/sho1_mutants/plate_plan.xlsx", sheet=2)%>%
+  tidyr::unite(col=well, row, col, sep="", remove = F)
+
+mut_identities<-readxl::read_xlsx("../../Data/growthcurves/sho1_mutants/Sho1_mutant_codes.xlsx")
+
+
+if(all(colnames(info_round1)==colnames(info_round2))){
+  print("Column names match, joining")
+  info<-bind_rows(info_round1, info_round2)
+}
+
+info<-left_join(info, mut_identities, by="sho1_mut")
+
+
+
+colnames(info)<-tolower(colnames(info))
+
+
+#Output
+out<-"../../Data/growthcurves/sho1_mutants/results_Sho1_mutants_growth_curves.csv"
+
+
+
+rm(info_round1, info_round2, mut_identities)
+```
+
+
+```{r, warning=FALSE}
+####CHUNK 2 : IMPORT DATA####
+
+mtx1<-readxl::read_xlsx(mtx_round1, 
+                           range = "B27:CU316", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 1)
+
+
+dmso1<-readxl::read_xlsx(dmso_round1, 
+                           range = "B27:CU316", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 2)
+
+
+
+mtx2<-readxl::read_xlsx(mtx_round2, 
+                           range = "B27:CU316", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 3)
+
+
+dmso2<-readxl::read_xlsx(dmso_round2, 
+                           range = "B27:CU316", 
+                           col_types = "numeric")%>%
+  select(-2)%>%                                     #Remove temperature column
+  mutate(Time=Time*24)%>%                     #Change time to hours instead of days
+  rename(time=Time)%>%
+  tidyr::pivot_longer(cols = -1, names_to = "well", values_to = "absorbance")%>%
+  mutate(plate = 4)
+
+
+gc<-bind_rows(mtx1, dmso1, mtx2, dmso2)%>%
+  right_join(info, ., by=c("well", "plate"))
+
+
+rm(mtx1, dmso1, mtx2, dmso2, info)
+```
+
+
+
+```{r}
+#### CHUNK 3 : VISUALIZE GROWTH CURVES ####
+
+
+#View raw growth curves
+gc%>%
+  filter(plate==1)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(col))+
+  theme_bw()+
+  ggtitle("Plate 1 - MTX")
+
+gc%>%
+  filter(plate==2)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(col))+
+  theme_bw()+
+  ggtitle("Plate 2 - DMSO")
+
+gc%>%
+  filter(plate==3)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(col))+
+  theme_bw()+
+  ggtitle("Plate 3 - MTX")
+
+gc%>%
+  filter(plate==4)%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line()+
+  facet_grid(rows=vars(row), cols=vars(col))+
+  theme_bw()+
+  ggtitle("Plate 4 - DMSO")
+
+
+
+#Visualize growth of same interactions
+  
+gc%>%
+  filter(selection=="DMSO")%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line(aes(colour=mutation, group=interaction(well, plate)), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=mutation))+
+  facet_grid(rows=vars(partner), cols=vars(mutation))+
+  theme_bw()+
+  ggtitle("DMSO")
+
+
+gc%>%
+  filter(selection=="MTX")%>%
+  # filter(mutation=="WT")%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line(aes(colour=mutation, group=interaction(well, plate)), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=mutation))+
+  facet_grid(rows=vars(partner), cols=vars(mutation))+
+  theme_bw()+
+  ggtitle("MTX")
+
+
+
+
+
+```
+
+
+```{r}
+
+#### CHUNK 4 : FILTERING WELLS #### 
+
+#Remove wells with problematic growth
+gc<-gc%>%
+  filter(well != "H12" | plate != 1)%>% #OD goes up then down
+  filter(well != "C2" | plate != 4 )%>% #Spike in OD, which goes back down
+  filter(!(well %in% c("E1", "F1")) | plate != 3)%>% # Outlier WT that didn't grow
+  filter(!(well %in% c("A1", "B1", "C1", "D1"))| plate !=3) # this set of 4 WT didn't grow like the others
+  
+  
+#Cut off at 48 hours for analysis
+gc<-gc%>%
+  filter(time <= 72)
+
+
+gc%>%
+  filter(selection=="MTX")%>%
+  # filter(mutation=="WT")%>%
+  ggplot(aes(x=time, y=absorbance))+
+  geom_line(aes(colour=mutation, group=interaction(well, plate)), linetype="dashed", alpha=0.5)+
+  geom_smooth(method="gam", formula = y ~ s(x, bs = "cs"), aes(colour=mutation))+
+  facet_grid(rows=vars(partner), cols=vars(mutation))+
+  theme_bw()+
+  ggtitle("MTX")
+
+```
+
+
+
+```{r}
+
+#### CHUNK 5 : CALCULATE AUC, VMAX ####
+
+####Define growth curve analysis functions####
+
+#Function to calculate the area under the curve of a growth curve
+trapezoid_auc<-function(x, y){
+  if(!is.numeric(x)){
+    print("x must be a numeric vector")
+    }else if(!is.numeric(y)){
+      print("y must be a numeric vector")
+      }else{
+      h<-diff(x)
+      auc<-(sum(y[-1]) + sum(y[-length(y)])) * mean(h) / 2
+      return(auc)
+      }
+} 
+
+#Function to take one well at a time and calculate max growth rate and auc
+calc_growth_stats<-function(df, well_id_col, time_col, absorbance_values_col){
+  complete_df<-data.frame()
+  #Take only one well
+  for (i in unique(df[[well_id_col]])){
+    current_data<-df%>%
+      filter({.data[[well_id_col]]}==i)
+    
+    #Calculate max growth rate
+    # max_v<-current_data%>%
+    #   pull(absorbance_values_col)%>%
+    #   diff(., lag=1)%>%
+    #   sort(decreasing=T)%>%
+    #   .[1:5]%>%
+    #   median()%>%
+    #   as.data.frame()%>%
+    #   rename(v_max=".")
+    
+    max_v<-current_data%>%
+      pull(absorbance_values_col)%>%
+      diff(., lag=5)%>%
+      sort(decreasing=T)%>%
+      quantile(., 0.98)%>%
+      as.data.frame()%>%
+      rename(v_max=".")
+    
+    #Calculate AUC
+    auc<-trapezoid_auc(x=pull(current_data, time_col), y=pull(current_data, absorbance_values_col))%>%
+        as.data.frame()%>%
+        rename(auc=".")
+    
+    #Calculate final absorbance
+    final_abs<-current_data%>%
+      filter(!!sym(time_col) == max(current_data[, time_col]))%>%
+      dplyr::select(all_of(absorbance_values_col))%>%
+      rename(final_abs = absorbance)
+    
+    id_info<-df%>%
+      filter({.data[[well_id_col]]}==i)%>%
+      dplyr::select(-c(all_of(time_col), all_of(absorbance_values_col)))%>%
+      distinct()
+    
+    current_data_completed<-bind_cols(id_info, max_v, auc, final_abs)
+    
+    complete_df<-bind_rows(complete_df, current_data_completed)
+    
+  }
+  
+  return(complete_df)
+  
+}
+
+
+```
+
+
+```{r}
+#### CHUNK 6 : COMPUTE AUC, VMAX ####
+
+growth_stats<-gc%>%unite(., well_id, well, plate, remove=F)%>%
+  calc_growth_stats(., "well_id", "time", "absorbance")
+```
+
+
+```{r}
+
+#### CHUNK 7 : VISUALISATION ####
+
+
+#View AUC after 48h 
+growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=mutation, y=log2(v_max)))+
+  geom_jitter(aes(colour=mutation), width = 0.1)+
+  stat_summary(geom = "errorbar", fun="mean", fun.min="mean", fun.max="mean")+
+  facet_wrap(facets = vars(partner), nrow=1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1))+
+  ggtitle("Interaction strengths")
+
+
+
+
+
+```
+
+
+```{r}
+
+####CHUNK 8: T-test####
+
+t.test<-growth_stats%>%
+  filter(selection == "MTX")%>%
+  group_by(partner)%>%
+  rstatix::pairwise_t_test(v_max ~ mutation, ref.group = "WT", p.adjust.method = "fdr", alternative="less")%>%
+  add_xy_position()
+
+
+
+t.test%>%
+  filter(p.adj.signif != "ns")
+
+
+order<-c("WT","stuffer","M286A","M286R","G287A","G287R","L290A","L290R","Y293A","Y293R","D317A","D317I","Y319A","Y319R","D333A","D333W","W338A","W338Q","I350A","I350W")  
+
+background_rects<-data.frame(begin=seq(from=0.5, to=19.5, by=2),
+                             end=seq(from=1.5, to=20.5, by=2))
+
+
+growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=mutation, y=v_max))+
+  geom_rect(data=background_rects, inherit.aes=F, aes(xmin=begin, xmax=end), ymax=Inf, ymin=-Inf, fill="grey80")+
+  geom_boxplot(aes(fill=partner), outlier.shape = NA)+
+  geom_point(shape=21, position=position_jitterdodge(jitter.width = 0.25), aes(fill=partner))+
+  # facet_wrap(facets = vars(partner), nrow=1)+
+  # geom_text(data=t.test%>%filter(p.adj.signif != "ns"), aes(x=group2, y=0.01, label=p.adj.signif))+
+  scale_x_discrete(limits=order)+
+  scale_fill_manual(values = c("cadetblue1", "cadetblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, colour="black"))+
+  ggtitle("MTX - t-test")
+
+
+
+
+```
+
+```{r}
+
+#### CHUNK 9 : NORMALIZE SCORES BY SAME PARTNER WITH WT SHO1 ####
+
+ctrl_stats<-growth_stats%>%
+  filter(mutation == "WT")%>%
+  select(partner, selection, v_max, auc, final_abs)%>%
+  group_by(partner, selection)%>%
+  summarise(ctrl_vmax=median(v_max),
+            ctrl_auc=median(auc),
+            ctrl_final=median(final_abs))
+  
+
+
+norm_growth_stats<-growth_stats%>%
+  left_join(., ctrl_stats, by=c("partner", "selection"))%>%
+  mutate(norm_vmax=v_max/ctrl_vmax,
+         norm_auc=auc/ctrl_vmax,
+         norm_final=final_abs/ctrl_final)
+  
+
+norm_t.test<-norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  group_by(partner)%>%
+  rstatix::pairwise_t_test(v_max ~ mutation, ref.group = "WT", p.adjust.method = "fdr", alternative="less")%>%
+  add_xy_position()
+
+
+norm_growth_stats%>%
+  filter(selection == "MTX")%>%
+  ggplot(aes(x=mutation, y=norm_vmax))+
+  geom_rect(data=background_rects, inherit.aes=F, aes(xmin=begin, xmax=end), ymax=Inf, ymin=-Inf, fill="grey80")+
+  geom_boxplot(aes(fill=partner), outlier.shape = NA)+
+  geom_hline(yintercept=1, linetype="dashed", colour="black")+
+  geom_point(shape=21, position=position_jitterdodge(jitter.width = 0.25), aes(fill=partner))+
+  geom_text(data=t.test%>%filter(p.adj.signif != "ns" & partner == "Pbs2"), aes(x=group2, y=2, label=p.adj.signif), colour="cadetblue1", fontface="bold", size=5)+
+  geom_text(data=t.test%>%filter(p.adj.signif != "ns" & partner == "Ybt1"), aes(x=group2, y=2.1, label=p.adj.signif), colour="cadetblue", fontface="bold", size=5)+
+  scale_x_discrete(limits=order, expand=c(0,0))+
+  scale_fill_manual(values = c("cadetblue1", "cadetblue"))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, colour="black"))+
+  labs(title = "MTX - Score normalised by WT interaction",
+       x=NULL, y="Normalized interaction score")
+
+```
+
+
+
+```{r}
+
+####CHUNK 10: EXPORT####
+
+write.csv(x = norm_growth_stats, file = out, row.names = F)
+
+
+```
+
