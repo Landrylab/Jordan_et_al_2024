@@ -1,0 +1,154 @@
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(magick)
+library(cowplot)
+
+theme_figure_3<-function(textsize=7){
+  theme(axis.text = element_text(size = textsize, colour="black"),
+        axis.title = element_text(size=textsize+5),
+        legend.title = element_text(size=textsize+2),
+        legend.text = element_text(size=textsize),
+        text = element_text(colour = "black"))
+}
+
+
+```
+
+
+
+```{r}
+pic_a<-"../Data/images/Fig3/fig3_a_mod.png"
+
+panel_a<-ggdraw()+draw_image(pic_a, scale=1)
+
+panel_a
+```
+
+```{r}
+
+
+#for second round of reviews, here is the alternative panel b
+pic_b<-"../Data/images/Fig3/fig3_b_annotated.png"
+panel_b<-ggdraw()+draw_image(pic_b, scale=1.2)
+
+panel_b
+
+
+
+```
+
+```{r}
+
+pic_c<-"../Data/images/Fig3/fig3_c_annotated.png"
+
+panel_c<-ggdraw()+draw_image(pic_c, scale=1.2)
+
+panel_c
+
+```
+
+```{r}
+d_data<-read.csv("../Data/DMS/results/aa_extended_motif_DMS_scores.csv")
+
+
+
+d_df<-d_data%>%
+  filter(position %in% 84:92)%>%
+  filter(aa != "*")%>%
+  filter(interactor == "Sho1" & sorbitol ==1 & condition =="MTX")%>%
+  mutate(hydrophobicity=case_when(aa %in% c("F", "I", "W", "L", "V", "M", "Y", "C", "A")~"Hydrophobic",
+                                  aa %in% c("R", "K", "N", "G", "P", "D")~ "Hydrophilic",
+                                  aa %in% c("T", "H", "E", "S", "Q" ) ~ "Neutral"))%>%
+  mutate(hydrophobicity=factor(hydrophobicity, levels=c("Hydrophilic", "Neutral", "Hydrophobic")))%>% #Order for plot
+  select(median_log2FC, position, hydrophobicity, type, aa)
+
+
+panel_d<-ggplot(d_df, aes(x=as.factor(position), y=median_log2FC))+
+  geom_text(data=d_df%>%filter(type =="WT"), aes(label=aa, y=0.5, colour=hydrophobicity), fontface="bold")+
+  geom_boxplot(aes(fill=hydrophobicity), colour="black", outlier.shape = 21)+
+  theme_bw()+
+  scale_fill_manual(values=c("#ffb000", "#dc267f", "#785ef0"))+
+  scale_colour_manual(values=c("#ffb000", "#dc267f", "#785ef0"), guide="none")+
+  guides(fill=guide_legend())+
+  labs(y="Sho1-Pbs2\nInteraction score",
+       x="Position in Pbs2")+
+  theme_figure_3(textsize = 12)+
+  theme(legend.position =c(0.1,0.15),
+        legend.background = element_rect(fill="white", colour="black"),
+        legend.title = element_blank())
+
+
+panel_d
+
+```
+
+
+```{r}
+
+e_data<-read.csv("../Data/growthcurves/sho1_mutants/results_Sho1_mutants_growth_curves.csv")%>%
+  filter(mutation %in% c("WT", "stuffer", "G287A", "I350W"))
+
+pbs2_col<-"#745296"
+ybt1_col<-"#f95738"
+
+panel_e<-e_data%>%
+  dplyr::filter(selection == "MTX")%>%
+  ggplot(aes(x=mutation, y=v_max))+
+  geom_boxplot(aes(fill=partner), colour="black", outlier.shape = NA)+
+  geom_hline(yintercept = e_data%>%filter(selection == "MTX" & partner== "Pbs2" & sho1_mut== "WT")%>%pull(v_max)%>%median(), colour=pbs2_col, linetype="dashed", linewidth=1)+
+  geom_hline(yintercept = e_data%>%filter(selection == "MTX" & partner== "Ybt1" & sho1_mut== "WT")%>%pull(v_max)%>%median(), colour=ybt1_col, linetype="dashed", linewidth=1)+
+  geom_point(shape=21, position=position_jitterdodge(jitter.width = 0.25), aes(fill=partner), show.legend = F)+
+  scale_x_discrete(limits=c("WT", "stuffer", "G287A", "I350W"), expand=c(0,0))+
+  scale_fill_manual(values = c(pbs2_col, ybt1_col))+
+  theme_bw()+
+  theme_figure_3(textsize=12)+
+  # theme(axis.text.x = element_text(angle=45, vjust=1, hjust=1, colour="black"))+
+  labs(x="Sho1 variant", y="Interaction score", fill="Interaction\npartner")
+
+panel_e
+
+
+```
+
+
+```{r}
+
+
+
+top_row<-plot_grid(panel_a,
+                panel_b, 
+                nrow=1, ncol=2,
+                labels=c("a", "b"), label_y=c(0.92, 0.92),label_size=20, label_colour="black")
+
+mid_row<-plot_grid(panel_c,
+                panel_e+theme(legend.position.inside =c(0.85,0.65),
+                              legend.position="inside",
+                              legend.background = element_rect(fill="white", colour="black"),
+                              legend.text = element_text(size=12),
+                              legend.key.size = unit(0.75, "line"),
+                              legend.title = element_blank()),
+                nrow=1, ncol=2,
+                labels=c("c", "e"), label_y=c(1.15, 1.15),label_size=20, label_colour="black")
+
+
+fig3<-plot_grid(top_row,
+                mid_row,
+                panel_d+theme(legend.position.inside =c(0.12,0.2),
+                              legend.text = element_text(size=12),
+                              legend.key.size = unit(0.75, "line"),
+                              legend.title = element_blank()),
+                nrow=3, ncol=1,
+                labels = c("", "", "d"), label_size = 20, label_colour = "black",
+                axis="tblr")+
+  theme(panel.background = element_rect(colour="white", fill="white"))
+
+save_plot(filename="../Data/images/Fig3/fig3.png", plot = fig3, dpi=300, ncol=2, nrow=3,  base_width=4, base_height=2.5)
+
+```
+
+
+
+
